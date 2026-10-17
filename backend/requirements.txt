@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic[email]
+pymongo
+motor
+python-dotenv
+PyJWT
+passlib[bcrypt]
+bcrypt
+python-multipart
+dnspython
+apscheduler
+fpdf2
+reportlab
+httpx
