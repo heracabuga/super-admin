@@ -26,4 +26,4 @@ VITE_ENROLLMENT_API_URL=http://127.0.0.1:8001/api
 npm run dev
 
 
-last update: pre-enrollmentV9.4
+last update: pre-enrollmentV9.4 - added student number input
