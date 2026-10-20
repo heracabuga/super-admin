@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Brand Theme Colors */
+  --primary-green: #2e522a;      /* Main Deep Green */
+  --sub-green: #E4F6E2;          /* Light Mint Sub Color */
+  
+  /* System Backgrounds & Surfacing */
+  --bg-primary: #f8faf8;
+  --bg-surface: #ffffff;
+  
+  /* Sidebar Palette */
+  --sidebar-bg: #1c331a;         /* Darker shade of main green for sidebar base */
+  --sidebar-hover: #264423;      /* Slightly lighter green for hover states */
+  --sidebar-active: #2e522a;     /* Main green for active tab background */
+  
+  /* Typography & Details */
+  --text-primary: #0f172a;
+  --text-muted: #64748b;
+  --text-light: #ffffff;
+  --border-color: #e2e8f0;
+  
+  /* System Radius Standards */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* Enrollment V9.4 Utility Styles */
+.animate-fade {
+  animation: fade 0.2s ease-out;
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+    transform: scale(0.98) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.yearBtn {
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: white;
+  padding: 0.6rem 1rem;
+  color: #64748b;
+  font-size: 0.875rem;
+  font-weight: 700;
+  transition: all 0.2s ease;
+}
+
+.yearBtn:hover {
+  border-color: #a7f3d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.yearBtn.active,
+.yearBtn[aria-pressed="true"] {
+  border-color: #1f5a3c;
+  background: #1f5a3c;
+  color: white;
+}
