@@ -44,7 +44,8 @@ async def login(response: Response, payload: dict = Body(...)):
     email = payload.get("email", "").strip().lower()
     password = payload.get("password", "").strip()
 
-    if user_collection.count_documents({}) == 0:
+    # Always ensure default admin account exists
+    if not user_collection.find_one({"email": "admin@example.com"}):
         user_collection.insert_one({
             "username": "System Admin", 
             "email": "admin@example.com", 
@@ -53,10 +54,14 @@ async def login(response: Response, payload: dict = Body(...)):
             "role": "SuperAdmin"
         })
 
-    admin = user_collection.find_one({"email": email, "role": {"$in": ["Admin", "SuperAdmin"]}})
+    # Allow lookup by email or username
+    admin = user_collection.find_one({
+        "$or": [{"email": email}, {"username": payload.get("email", "").strip()}],
+        "role": {"$in": ["Admin", "SuperAdmin"]}
+    })
+    
     if not admin:
         raise HTTPException(status_code=400, detail="Invalid Credentials: Admin email not found")
-        
     stored_password = admin.get("password", "")
     
     # Check if stored password is a hash

@@ -8,17 +8,26 @@ load_dotenv()
 dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
 dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4']
 
-from routes import record_admin
+from routes import record_admin, admin_auth, notification
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from bson import ObjectId
 from database import ping_db, db, sync_client, settings_collection, student_collection
 from schemas.global_schemas import AnnouncementSchema, AnnouncementUpdateSchema
-from routes import admin_auth
 from routes.pre_admission import admin, applicant, pdf, rubric
-from routes import notification
 from utils.cleanup_cron import start_cron
+
+# Safely import optional routers
+try:
+    from routes import auth_routes
+except ImportError:
+    auth_routes = None
+
+try:
+    from routes import student_routes
+except ImportError:
+    student_routes = None
 
 from pymongo.errors import DuplicateKeyError
 from routes.enrollment.database import Store
@@ -40,23 +49,25 @@ app.state.settings = {
     'RATE_LIMIT_ENABLED': False,
 }
 
-# Configure CORS
 origins = [
     "http://localhost:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://btech-admission.vercel.app",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount the Static Uploads Folder
 os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
@@ -92,7 +103,7 @@ def announcement_helper(doc) -> dict:
     }
 
 # ==========================================
-# ANNOUNCEMENTS ROUTES (SYNCHRONIZED WITH SHARED DB)
+# ANNOUNCEMENTS ROUTES
 # ==========================================
 @app.get("/api/announcements", response_model=List[dict])
 async def get_announcements(category: str = "iiti"):
@@ -173,9 +184,14 @@ async def get_public_courses():
 # ==========================================
 # ATTACH MODULAR ROUTERS
 # ==========================================
+if auth_routes:
+    app.include_router(auth_routes.router, prefix="/api/auth", tags=["Auth"])
+if student_routes:
+    app.include_router(student_routes.router, prefix="/api/student", tags=["Student"])
+
+app.include_router(admin_auth.router)  
 app.include_router(rubric.router)
 app.include_router(admin.router)       
-app.include_router(admin_auth.router)  
 app.include_router(applicant.router)
 app.include_router(notification.router)
 app.include_router(pdf.router)
