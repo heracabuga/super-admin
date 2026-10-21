@@ -5,7 +5,7 @@ export function Header({ title }) {
   const activeYear = localStorage.getItem("adminSchoolYear") || "2026-2027";
   const activeSemester = localStorage.getItem("adminSchoolSemester") || "2nd Semester";
 
-  const isPreOrPostAdmission = title.includes('Pre-Admission') || title.includes('Post-Admission');
+  const isPreOrPostAdmission = title.includes('Pre-Admission') || title.includes('Post-Admission') || ['Dashboard', 'Applications', 'Pre-Admission', 'Post-Admission', 'Settings'].includes(title);
 
   const getSubtitle = (t) => {
     if (t.includes('Dashboard')) return 'Overview of applicant data and statistics';

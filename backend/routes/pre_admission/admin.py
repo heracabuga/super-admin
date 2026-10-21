@@ -46,18 +46,20 @@ from utils.pre_admission.program_capacity import with_capacity_status
 # Set up the router
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
+import re
+
 def get_next_student_number(current_year: int) -> str:
     # Find all confirmed applicants who already have a student number for this year
     all_apps = applicant_collection.find({
-        "applicantId": {"$regex": f"^{current_year}"}
+        "applicantId": {"$regex": f"^A?-?{current_year}"}
     })
     
     used_numbers = []
     for app in all_apps:
-        app_id = app.get("applicantId", "")
-        # Only consider IDs that are strictly numeric and start with the year
-        if app_id.isdigit() and app_id.startswith(str(current_year)):
-            num_str = app_id.replace(str(current_year), "")
+        app_id = str(app.get("applicantId", "")).strip()
+        clean_id = app_id.replace("A-", "").replace("A", "")
+        if clean_id.isdigit() and clean_id.startswith(str(current_year)):
+            num_str = clean_id[len(str(current_year)):]
             if num_str.isdigit():
                 used_numbers.append(int(num_str))
                 
@@ -69,25 +71,99 @@ def get_next_student_number(current_year: int) -> str:
         elif num > sequence:
             break
             
-    return f"{current_year}{str(sequence).zfill(5)}"
+    return f"A-{current_year}{str(sequence).zfill(5)}"
+
+def get_applicant_course(applicant: dict) -> str:
+    """Resolves the applicant's current active course (handles activeProgram, reconsideration, reassignments, 2nd choice if 1st rejected, and profile)."""
+    if not applicant or not isinstance(applicant, dict):
+        return ""
+    if applicant.get("activeProgram"):
+        return str(applicant.get("activeProgram")).strip()
+    if applicant.get("reassignedProgram"):
+        return str(applicant.get("reassignedProgram")).strip()
+    if applicant.get("reconsiderationProgram"):
+        return str(applicant.get("reconsiderationProgram")).strip()
+        
+    profile = applicant.get("profile") or {}
+    app_details = profile.get("appDetails") or {} if isinstance(profile, dict) else {}
+
+    if applicant.get("isRejectedFirstChoice"):
+        course = (
+            applicant.get("secondChoice") or 
+            app_details.get("secondChoice", "")
+        )
+        if course:
+            return str(course).strip()
+    course = (
+        applicant.get("firstChoice") or 
+        app_details.get("firstChoice", "") or 
+        applicant.get("course", "")
+    )
+    return str(course).strip() if course else ""
+
+def get_applicant_school_year(applicant: dict) -> str:
+    """Resolves the applicant's school year, falling back to active settings."""
+    if not applicant:
+        return ""
+    sy = applicant.get("schoolYear")
+    if not sy:
+        settings = settings_collection.find_one({"institute": "Admission"}) or {}
+        sy = settings.get("schoolYear", "")
+    return str(sy).strip() if sy else ""
 
 def get_auto_section(course: str, school_year: str) -> str:
-    """Automatically calculates the section based on 45 students per section."""
+    """Automatically calculates the section based on configurable section capacity (default 45)."""
     if not course or not school_year:
         return "A"
         
-    # Count how many students are already in this course and year with a section
+    settings = settings_collection.find_one({"institute": "Admission"}) or {}
+    capacity = int(settings.get("sectionCapacity", 45))
+    if capacity <= 0:
+        capacity = 45
+
+    course_clean = str(course).strip()
+    sy_clean = str(school_year).strip()
+    sy_condition = {"$in": [sy_clean, int(sy_clean)]} if sy_clean.isdigit() else sy_clean
+
+    course_candidates = [course_clean]
+    if " - " in course_clean:
+        course_candidates.extend([p.strip() for p in course_clean.split(" - ") if p.strip()])
+    
+    # Also resolve against configured courses in settings
+    configured_courses = settings.get("courses", [])
+    for c in configured_courses:
+        if isinstance(c, dict):
+            c_name = c.get("name", "").strip()
+            c_code = c.get("abbreviation", "") or c.get("code", "")
+            c_code = c_code.strip()
+            combined = f"{c_code} - {c_name}".strip() if (c_code and c_name) else ""
+            if course_clean.lower() in [c_name.lower(), c_code.lower(), combined.lower()]:
+                if c_name: course_candidates.append(c_name)
+                if c_code: course_candidates.append(c_code)
+                if combined: course_candidates.append(combined)
+
+    escaped_candidates = "|".join(re.escape(c) for c in set(course_candidates) if c)
+    course_pattern = re.compile(f"^({escaped_candidates})$", re.IGNORECASE)
+
+    # Count how many students are already in this course and year with an assigned section
     student_count = applicant_collection.count_documents({
-        "firstChoice": course,
-        "schoolYear": school_year,
-        "status": "Passed",
-        "admissionRemarks": "Passed",
-        "slotStatus": "Admitted",
-        "section": {"$exists": True}
+        "$or": [
+            {"activeProgram": course_pattern},
+            {"reassignedProgram": course_pattern},
+            {"reconsiderationProgram": course_pattern},
+            {"firstChoice": course_pattern, "isRejectedFirstChoice": {"$ne": True}, "reconsiderationProgram": {"$in": [None, ""]}},
+            {"secondChoice": course_pattern, "isRejectedFirstChoice": True, "reconsiderationProgram": {"$in": [None, ""]}},
+            {"profile.appDetails.firstChoice": course_pattern, "isRejectedFirstChoice": {"$ne": True}, "reconsiderationProgram": {"$in": [None, ""]}},
+            {"profile.appDetails.secondChoice": course_pattern, "isRejectedFirstChoice": True, "reconsiderationProgram": {"$in": [None, ""]}},
+            {"course": course_pattern}
+        ],
+        "schoolYear": sy_condition,
+        "slotStatus": {"$in": ["Admitted", "admitted"]},
+        "section": {"$exists": True, "$nin": [None, ""]}
     })
     
-    # 0-44 = A, 45-89 = B, etc.
-    section_index = student_count // 45
+    # 0-(capacity-1) = A, capacity-(2*capacity-1) = B, etc.
+    section_index = student_count // capacity
     section_letter = chr(65 + (section_index % 26)) 
     
     return section_letter
@@ -497,13 +573,39 @@ async def get_all_applicants(request: Request, schoolYear: str = None, archive: 
         middle_name = app.get("middleName", "")
         last_name = app.get("lastName", "")
         app["name"] = f"{last_name}, {first_name} {middle_name}".strip()
-        app["status"] = app.get("admissionStatus", "Pending")
-        if app["status"] == "For Re-Evaluation":
-            app["status"] = "For Interview"
         
-        matched_course = next((c for c in all_courses if c.get("name", "").lower() == active_choice), None)
+        # Determine if the applicant has completed their interview
+        is_interviewed = bool(
+            app.get("isInterviewed") or
+            app.get("interviewStatus") in ["Passed", "Failed"] or
+            (app.get("interviewScore") is not None and float(app.get("interviewScore", 0)) > 0)
+        )
+        
+        if not is_interviewed:
+            # Un-interviewed applicants must not carry exam fields or qualification results
+            app["examScore"] = None
+            app["bcetRawScore"] = None
+            app["bcetHighestScore"] = None
+            app["isExamined"] = False
+            app["examStatus"] = "Pending"
+            app["admissionStatus"] = "Pending"
+            app["admissionRemarks"] = ""
+            app["status"] = "For Interview"
+        else:
+            app["status"] = app.get("admissionStatus", "Pending")
+            if app["status"] == "For Re-Evaluation":
+                app["status"] = "For Interview"
+        
+        effective_course = get_applicant_course(app)
+        matched_course = next((c for c in all_courses if (c.get("name", "").lower() == active_choice or c.get("abbreviation", "").lower() == active_choice)), None)
+        if not matched_course and " - " in active_choice:
+            parts = [p.strip().lower() for p in active_choice.split(" - ") if p.strip()]
+            matched_course = next((c for c in all_courses if c.get("name", "").lower() in parts or c.get("abbreviation", "").lower() in parts), None)
+
         app["institute"] = get_inst_abbr(matched_course.get("institute")) if matched_course else "N/A"
-        app["course"] = app.get("secondChoice", "N/A") if is_rejected_first_choice else app.get("firstChoice", "N/A")
+        app["course"] = effective_course or "N/A"
+        if not app.get("activeProgram"):
+            app["activeProgram"] = effective_course
         
         formatted_applicants.append(app)
         
@@ -690,6 +792,9 @@ async def send_bulk_emails(payload: SendBulkEmailsPayload = Body(...), user: dic
     sent_count = 0
     failed_count = 0
 
+    brevo_active = bool(os.getenv("BREVO_API_KEY"))
+    live_dispatched = False
+
     for email_data in emails:
         to_email = email_data.get("email")
         subject = email_data.get("subject", "Admission Notice")
@@ -699,10 +804,15 @@ async def send_bulk_emails(payload: SendBulkEmailsPayload = Body(...), user: dic
         email_type = email_data.get("type", "Admission Qualification Notice")
 
         try:
-            # 1. Send real email via Brevo HTTP API
+            # 1. Attempt real email via Brevo HTTP API
             if to_email:
                 from utils.pre_admission.email_service import send_mail
-                send_mail(to_email, subject, message_body, html=html_message)
+                try:
+                    res = send_mail(to_email, subject, message_body, html=html_message)
+                    if res:
+                        live_dispatched = True
+                except Exception as mail_err:
+                    print(f"[EMAIL WARNING] Live dispatch failed for {to_email}: {mail_err}")
 
             # 2. Safely update database flag and save sent email content
             if app_id:
@@ -721,15 +831,16 @@ async def send_bulk_emails(payload: SendBulkEmailsPayload = Body(...), user: dic
                 )
             sent_count += 1
         except Exception as e:
-            print(f"Failed to send email to {to_email}: {e}")
-            print(f"SMTP Error: {str(e)}")
+            print(f"Failed to record email for {to_email}: {e}")
             failed_count += 1
-            raise HTTPException(status_code=500, detail="Email delivery failed. Please try again later.")
+
+    feedback_msg = f"Message sent successfully to {sent_count} applicant(s)." if sent_count > 1 else "Message sent successfully!"
 
     return {
-        "message": f"Successfully sent {sent_count} email(s).",
+        "message": feedback_msg,
         "sent": sent_count,
-        "failed": failed_count
+        "failed": failed_count,
+        "liveDispatched": live_dispatched
     }
 
 @router.post("/applicants/import-scores")
@@ -843,8 +954,32 @@ async def reassign_applicant_program(id: str, payload: ReassignProgramPayload = 
     )
     return {"message": f"Applicant reassigned to {new_program} successfully."}
 
+@router.put("/applicant/{id}/accept-application")
+async def accept_applicant_application(id: str, user: dict = Depends(admin_only)):
+    if not ObjectId.is_valid(id):
+        raise HTTPException(status_code=400, detail="Invalid applicant ID")
+    existing = applicant_collection.find_one({"_id": ObjectId(id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Applicant not found")
+        
+    admin_id = user.get("email") or user.get("username") or "Admin"
+    now = datetime.utcnow()
+    update_data = {
+        "isApplicationAccepted": True,
+        "applicationAcceptedAt": now,
+        "applicationAcceptedBy": admin_id
+    }
+
+    applicant_collection.update_one(
+        {"_id": ObjectId(id)},
+        {"$set": update_data}
+    )
+    return {"message": "Applicant application accepted successfully.", "isApplicationAccepted": True}
+
 @router.put("/applicant/{id}/status")
 async def update_status(id: str, payload: UpdateStatusPayload = Body(...), user: dict = Depends(admin_only)):
+    if not ObjectId.is_valid(id):
+        raise HTTPException(status_code=400, detail="Invalid applicant ID format")
     payload = payload.model_dump()
     status = payload.get("status")
     slot_status = payload.get("slotStatus")
@@ -852,29 +987,53 @@ async def update_status(id: str, payload: UpdateStatusPayload = Body(...), user:
     interview_score = payload.get("interviewScore")
     gwa = payload.get("gwa")
     total_perc = payload.get("totalPerc")
+    bcet_raw = payload.get("bcetRawScore")
+    bcet_highest = payload.get("bcetHighestScore")
     
+    existing_applicant = applicant_collection.find_one({"_id": ObjectId(id)})
+    if not existing_applicant:
+        raise HTTPException(status_code=404, detail="Applicant not found")
+
+    is_interviewed = bool(
+        existing_applicant.get("isInterviewed") or
+        existing_applicant.get("interviewStatus") in ["Passed", "Failed"] or
+        (existing_applicant.get("interviewScore") is not None and float(existing_applicant.get("interviewScore", 0)) > 0) or
+        (interview_score is not None and float(interview_score) > 0)
+    )
+
     update_fields = {}
     if status:
         if status in ["Confirmed", "Forfeit"]:
-            # Admin slot decisions. Confirmed is an offered slot; applicant acceptance finalizes admission.
             update_fields["slotStatus"] = "Pending" if status == "Confirmed" else "Forfeited"
             update_fields["admissionStatus"] = "Confirmed" if status == "Confirmed" else "Forfeit"
             if status == "Confirmed":
                 update_fields["admissionRemarks"] = "Passed"
         elif status in ["Passed", "Waitlisted", "Failed"]:
-            # Admission qualification results
-            update_fields["admissionRemarks"] = status
-            update_fields["admissionStatus"] = status
+            if is_interviewed:
+                update_fields["admissionRemarks"] = status
+                update_fields["admissionStatus"] = status
+            else:
+                update_fields["admissionStatus"] = "Pending"
+                update_fields["admissionRemarks"] = ""
+                update_fields["status"] = "For Interview"
+        elif status in ["For Interview", "Pending"]:
+            update_fields["admissionStatus"] = "Pending"
+            update_fields["admissionRemarks"] = ""
+            update_fields["status"] = "For Interview"
         else:
             update_fields["admissionStatus"] = status
-        db_status = update_fields.get("admissionStatus", status)
+        db_status = update_fields.get("status", update_fields.get("admissionStatus", status))
 
     if slot_status:
         update_fields["slotStatus"] = slot_status
-    if exam_score is not None:
+    if exam_score is not None and is_interviewed:
         update_fields["examScore"] = float(exam_score)
         update_fields["isExamined"] = True
         update_fields["examStatus"] = "Passed" if float(exam_score) >= 37.5 else "Failed"
+        if bcet_raw is not None:
+            update_fields["bcetRawScore"] = float(bcet_raw)
+        if bcet_highest is not None:
+            update_fields["bcetHighestScore"] = float(bcet_highest)
     if interview_score is not None:
         update_fields["interviewScore"] = float(interview_score)
     if gwa is not None:
@@ -882,30 +1041,37 @@ async def update_status(id: str, payload: UpdateStatusPayload = Body(...), user:
     if total_perc is not None:
         update_fields["totalPerc"] = float(total_perc)
     
-    bcet_raw = payload.get("bcetRawScore")
-    bcet_highest = payload.get("bcetHighestScore")
-    if bcet_raw is not None:
-        update_fields["bcetRawScore"] = float(bcet_raw)
-    if bcet_highest is not None:
-        update_fields["bcetHighestScore"] = float(bcet_highest)
+    if is_interviewed:
+        if bcet_raw is not None and "bcetRawScore" not in update_fields:
+            update_fields["bcetRawScore"] = float(bcet_raw)
+        if bcet_highest is not None and "bcetHighestScore" not in update_fields:
+            update_fields["bcetHighestScore"] = float(bcet_highest)
 
-    existing_applicant = applicant_collection.find_one({"_id": ObjectId(id)})
-    if not existing_applicant:
-        raise HTTPException(status_code=404, detail="Applicant not found")
+    # If slot status or admission status is Admitted, auto-assign section if missing
+    target_slot = update_fields.get("slotStatus", "").lower()
+    target_adm = update_fields.get("admissionStatus", "").lower()
+    if target_slot == "admitted" or target_adm == "admitted":
+        if not existing_applicant.get("section"):
+            course = get_applicant_course(existing_applicant)
+            sy = get_applicant_school_year(existing_applicant)
+            update_fields["section"] = get_auto_section(course, sy)
+
+    # Strictly preserve A- prefix on applicantId
+    curr_id = existing_applicant.get("applicantId")
+    if curr_id and not str(curr_id).startswith("A-") and curr_id != "Forfeit":
+        update_fields["applicantId"] = f"A-{curr_id}"
 
     current_status = (existing_applicant.get("admissionStatus") or "pending").lower()
-    # Use the incoming values if provided, otherwise fall back to existing DB values
     check_exam = update_fields.get("examScore", existing_applicant.get("examScore", 0)) or 0
     check_interview = update_fields.get("interviewScore", existing_applicant.get("interviewScore", 0)) or 0
 
-    is_passing_scores = (check_exam >= 75 and check_interview >= 75)
+    is_passing_scores = (check_exam >= 37.5 and check_interview >= 70)
     is_already_passed = current_status in ["passed", "admitted", "confirmed"] or (existing_applicant.get("admissionRemarks") or "").lower() == "passed"
 
     if status in ["Confirmed", "Forfeit"] and not (is_already_passed or is_passing_scores):
         raise HTTPException(status_code=400, detail="Cannot mark as Confirmed/Forfeit because the applicant has not met passing requirements.")
 
     applicant_collection.update_one({"_id": ObjectId(id)}, {"$set": update_fields})
-
     applicant = applicant_collection.find_one({"_id": ObjectId(id)})
 
     if status:
@@ -918,87 +1084,171 @@ async def update_status(id: str, payload: UpdateStatusPayload = Body(...), user:
             else:
                 user_collection.update_one({"email": old_email}, {"$set": {"status": db_status}})
 
-
-
     applicant["_id"] = str(applicant["_id"])
     for k, v in applicant.items():
         if isinstance(v, ObjectId): applicant[k] = str(v)
         
     return {"msg": "Status updated successfully", "applicant": applicant}
 
-# ==========================================
-# FALLBACKS & DYNAMIC ROUTES
-# ==========================================
+@router.post("/applicants/import-scores")
+async def import_scores(file: UploadFile = File(...), user: dict = Depends(admin_only)):
+    if not (file.filename and file.filename.lower().endswith(".csv")):
+        raise HTTPException(status_code=400, detail="Invalid file format. Only CSV files (.csv) are allowed.")
+    valid_csv_mimes = ["text/csv", "application/vnd.ms-excel", "application/csv", "text/plain", "application/octet-stream"]
+    if file.content_type and file.content_type.lower() not in valid_csv_mimes:
+        raise HTTPException(status_code=400, detail="Invalid file type. File must be a valid CSV.")
 
-@router.put("/{id}")
-async def update_admin(id: str, payload: UpdateAdminPayload = Body(...), user: dict = Depends(admin_only)):
-    payload = payload.model_dump()
-    user_collection.update_one({"_id": ObjectId(id)}, {"$set": payload})
-    return {"msg": "Admin updated"}
-
-@router.delete("/{id}")
-async def delete_admin(id: str, user: dict = Depends(admin_only)):
-    user_collection.delete_one({"_id": ObjectId(id)})
-    return {"msg": "Admin deleted"}
-
-from bson import ObjectId
-from fastapi import HTTPException, Body, Depends
-
-# -----------------------------------------
-# FIX FOR ISSUE #4: DELETE ADMIN ACCOUNT
-# -----------------------------------------
-@router.delete("/user/{user_id}")
-async def delete_admin(user_id: str, user: dict = Depends(admin_only)):
+    content = await file.read()
     try:
-        result = user_collection.delete_one({"_id": ObjectId(user_id)})
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Admin not found")
-        return {"msg": "Admin deleted successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail="Invalid User ID format")
+        decoded_content = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid file encoding. File must be UTF-8 encoded.")
 
-# -----------------------------------------
-# FIX FOR ISSUE #5: EDIT ADMIN ACCOUNT
-# -----------------------------------------
-@router.put("/user/{user_id}")
-async def update_admin(user_id: str, payload: UpdateAdminPayload = Body(...), user: dict = Depends(admin_only)):
-    payload = payload.model_dump()
-    try:
-        # Prevent the database ID from being updated
-        payload.pop("_id", None)
-        
-        # Double check email is lowercase in backend just in case
-        if "email" in payload:
-            payload["email"] = payload.get("email", "").strip().lower()
+    rows = decoded_content.split("\n")
+    updated_count = 0
+    
+    for row in rows[1:]:
+        if not row.strip(): 
+            continue
+        columns = [col.strip().strip('"') for col in row.split(",")]
+        if len(columns) < 5: 
+            continue
             
-        result = user_collection.update_one(
-            {"_id": ObjectId(user_id)},
-            {"$set": payload}
-        )
+        short_id = columns[0]
+        exam_date = columns[2]
+        try:
+            score = float(columns[3])
+        except ValueError:
+            score = 0
+        remarks = columns[4]
         
-        if result.matched_count == 0:
-            raise HTTPException(status_code=404, detail="Admin not found")
-            
-        return {"msg": "Admin updated successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail="Invalid update request")
+        if short_id:
+            target = applicant_collection.find_one({"applicantId": short_id})
+            if target:
+                target_interviewed = bool(
+                    target.get("isInterviewed") or
+                    target.get("interviewStatus") in ["Passed", "Failed"] or
+                    (target.get("interviewScore") is not None and float(target.get("interviewScore") or 0) > 0)
+                )
+                if not target_interviewed:
+                    continue
+                update_data = {
+                    "examScore": score,
+                    "isExamined": True
+                }
+                if remarks: update_data["examStatus"] = remarks
+                if exam_date: update_data["examDate"] = exam_date
+                
+                applicant_collection.update_one({"_id": target["_id"]}, {"$set": update_data})
+                updated_count += 1
+                
+    return {"message": f"Successfully imported and updated {updated_count} applicants."}
 
-# -----------------------------------------
-# SAVE EMAIL TEMPLATES
-# -----------------------------------------
-@router.put("/settings/email-template")
-async def update_email_template(payload: UpdateEmailTemplatePayload = Body(...), user: dict = Depends(admin_only)):
-    payload = payload.model_dump()
-    try:
-        # Save it under "emailTemplate" in your settings document
-        settings_collection.update_one(
-            {}, 
-            {"$set": {"emailTemplate": payload}},
-            upsert=True 
+@router.delete("/applicant/{id}")
+@router.delete("/applicants/{id}")
+async def delete_applicant(id: str, user: dict = Depends(admin_only)):
+    query_conditions = [{"applicantId": id}, {"id": id}]
+    if ObjectId.is_valid(id):
+        query_conditions.append({"_id": ObjectId(id)})
+    
+    applicant = applicant_collection.find_one({"$or": query_conditions})
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Applicant not found")
+        
+    app_oid = applicant["_id"]
+    app_id_str = applicant.get("applicantId") or str(app_oid)
+    app_email = applicant.get("email")
+    
+    # 1. Delete applicant record
+    applicant_collection.delete_one({"_id": app_oid})
+    
+    # 2. Delete corresponding student login account
+    if app_email:
+        user_collection.delete_many({"$or": [{"email": app_email}, {"username": app_id_str}]})
+    elif app_id_str:
+        user_collection.delete_many({"username": app_id_str})
+        
+    # 3. Clean up associated notifications
+    notification_collection.delete_many({"$or": [{"recipientId": str(app_oid)}, {"recipientId": app_id_str}]})
+    
+    # 4. Audit log
+    audit_collection.insert_one({
+        "action": f"Deleted applicant {app_id_str} ({applicant.get('name') or applicant.get('firstName', '')})",
+        "performedBy": user.get("username") or user.get("email") or "Admin",
+        "institute": user.get("institute") or "Admission",
+        "timestamp": datetime.utcnow()
+    })
+    
+    return {"msg": "Applicant deleted successfully", "deletedId": str(app_oid)}
+
+@router.get("/utilities/fix-missing-sections")
+async def fix_missing_sections(user: dict = Depends(admin_only)):
+    """Assigns sections to admitted applicants who are missing one."""
+    query = {
+        "slotStatus": {"$in": ["Admitted", "admitted"]},
+        "$or": [
+            {"section": {"$exists": False}},
+            {"section": None},
+            {"section": ""}
+        ]
+    }
+    
+    missing_applicants = list(applicant_collection.find(query))
+    updated_count = 0
+    
+    for app in missing_applicants:
+        course = get_applicant_course(app)
+        sy = get_applicant_school_year(app)
+        new_section = get_auto_section(course, sy)
+        
+        applicant_collection.update_one(
+            {"_id": app["_id"]}, 
+            {"$set": {"section": new_section}}
         )
-        return {"msg": "Email template saved successfully!"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail="Failed to save email template")
+        updated_count += 1
+        
+    return {"msg": f"Successfully auto-assigned sections to {updated_count} applicants!"}
+
+@router.get("/utilities/backfill-active-programs")
+async def backfill_active_programs(user: dict = Depends(admin_only)):
+    """One-time utility to populate activeProgram and activeChoiceType for existing records."""
+    all_applicants = list(applicant_collection.find({}))
+    updated_count = 0
+    for app in all_applicants:
+        updates = {}
+        if not app.get("activeProgram"):
+            effective = get_applicant_course(app)
+            if effective:
+                updates["activeProgram"] = effective
+                if app.get("reassignedProgram"):
+                    updates["activeChoiceType"] = "reassigned"
+                elif app.get("reconsiderationProgram"):
+                    updates["activeChoiceType"] = "reconsideration"
+                elif app.get("isRejectedFirstChoice"):
+                    updates["activeChoiceType"] = "secondChoice"
+                else:
+                    updates["activeChoiceType"] = "firstChoice"
+        if updates:
+            applicant_collection.update_one({"_id": app["_id"]}, {"$set": updates})
+            updated_count += 1
+    return {"msg": f"Successfully backfilled activeProgram for {updated_count} applicants!"}
+
+@router.post("/utilities/hash-legacy-passwords")
+async def hash_legacy_passwords(user: dict = Depends(admin_only)):
+    users = user_collection.find({})
+    updated_count = 0
+    
+    for u in users:
+        pw = u.get("password", "")
+        if pw and not (pw.startswith("$2b$") or pw.startswith("$2a$")):
+            hashed_pw = pwd_context.hash(pw)
+            user_collection.update_one(
+                {"_id": u["_id"]}, 
+                {"$set": {"password": hashed_pw}}
+            )
+            updated_count += 1
+            
+    return {"message": f"Successfully secured {updated_count} plain-text accounts."}
 
 @router.get("/utilities/clean-sections")
 async def clean_sections():
@@ -1010,3 +1260,59 @@ async def clean_sections():
         applicant_collection.update_one({"_id": app["_id"]}, {"$set": {"section": just_the_letter}})
         count += 1
     return {"msg": f"Cleaned up the word 'Section' from {count} applicants!"}
+
+@router.put("/settings/email-template")
+async def update_email_template(payload: UpdateEmailTemplatePayload = Body(...), user: dict = Depends(admin_only)):
+    payload = payload.model_dump()
+    try:
+        settings_collection.update_one(
+            {}, 
+            {"$set": {"emailTemplate": payload}},
+            upsert=True 
+        )
+        return {"msg": "Email template saved successfully!"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Failed to save email template")
+
+# ==========================================
+# FALLBACKS & DYNAMIC ROUTES
+# ==========================================
+
+@router.put("/user/{user_id}")
+async def update_admin_user(user_id: str, payload: UpdateAdminPayload = Body(...), user: dict = Depends(admin_only)):
+    payload = payload.model_dump()
+    try:
+        payload.pop("_id", None)
+        if "email" in payload:
+            payload["email"] = payload.get("email", "").strip().lower()
+            
+        result = user_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": payload}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Admin not found")
+        return {"msg": "Admin updated successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid update request")
+
+@router.delete("/user/{user_id}")
+async def delete_admin_user(user_id: str, user: dict = Depends(admin_only)):
+    try:
+        result = user_collection.delete_one({"_id": ObjectId(user_id)})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Admin not found")
+        return {"msg": "Admin deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid User ID format")
+
+@router.put("/{id}")
+async def update_admin_fallback(id: str, payload: UpdateAdminPayload = Body(...), user: dict = Depends(admin_only)):
+    payload = payload.model_dump()
+    user_collection.update_one({"_id": ObjectId(id)}, {"$set": payload})
+    return {"msg": "Admin updated"}
+
+@router.delete("/{id}")
+async def delete_admin_fallback(id: str, user: dict = Depends(admin_only)):
+    user_collection.delete_one({"_id": ObjectId(id)})
+    return {"msg": "Admin deleted"}

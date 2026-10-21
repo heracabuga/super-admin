@@ -72,12 +72,17 @@ class InstituteModel(BaseModel):
     openingTime: str = ""
     closingTime: str = ""
     dailyLimit: Optional[int] = 0
+    blockedDates: List[str] = Field(default_factory=list)
+    requiresInterview: bool = True
 
 class CourseModel(BaseModel):
     institute: str
     abbreviation: str = ""
     name: str
     limit: int = 0
+    applicationLimit: Optional[int] = 0
+    hasBoardExam: Optional[bool] = False
+    allowedApplicantTypes: List[str] = Field(default_factory=lambda: ["SHS Graduate", "Transferee", "ALS"])
 
 class NotificationModel(BaseModel):
     title: str

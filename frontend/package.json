@@ -10,10 +10,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@lottiefiles/dotlottie-react": "^0.18.6",
+    "@react-pdf/renderer": "^4.5.1",
+    "axios": "^1.7.9",
+    "buffer": "^6.0.3",
     "chart.js": "^4.5.1",
     "docx": "^9.13.0",
     "file-saver": "^2.0.5",
     "firebase": "^12.17.0",
+    "jspdf": "^4.2.0",
+    "jspdf-autotable": "^5.0.7",
     "lucide-react": "^1.28.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

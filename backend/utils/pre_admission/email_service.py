@@ -13,7 +13,8 @@ def send_mail(to_email, subject, body, html=None, attachments=None):
     api_key = os.getenv("BREVO_API_KEY")
 
     if not api_key:
-        raise Exception("BREVO_API_KEY is not set in environment variables.")
+        print("[WARNING] BREVO_API_KEY is not set in environment variables. Live email delivery skipped.")
+        return False
 
     url = "https://api.brevo.com/v3/smtp/email"
     

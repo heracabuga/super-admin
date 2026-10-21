@@ -2,6 +2,9 @@ import os
 import json
 import random
 import string
+import uuid
+import re
+import jwt
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -9,17 +12,30 @@ from email.mime.application import MIMEApplication
 from datetime import datetime, timedelta
 from routes.pre_admission.admin import fix_ids
 from utils.pre_admission.pdf_generator import generate_application_form_pdf
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Body
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Body, Request
 from bson import ObjectId
 from passlib.context import CryptContext
 
-from database import applicant_collection, settings_collection, notification_collection, db
+from database import applicant_collection, settings_collection, notification_collection, user_collection, db
 from middlewares.auth import get_current_user, applicant_only
 from utils.file_upload import save_upload
+from utils.pre_admission.limiter import limiter
+from schemas.pre_admission_payloads import AcceptOfferPayload, AdmissionDecisionPayload
 
 router = APIRouter(prefix="/api/applicant", tags=["Applicant"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.getenv("JWT_SECRET")
+
+def sanitize_ph_phone(phone_str: str) -> str:
+    """Standardizes Philippine phone numbers to 09XXXXXXXXX format."""
+    if not phone_str:
+        return ""
+    clean = re.sub(r"[^\d+]", "", str(phone_str).strip())
+    if clean.startswith("+63"):
+        clean = "0" + clean[3:]
+    elif clean.startswith("63"):
+        clean = "0" + clean[2:]
+    return clean
 
 # ==========================================
 # AUTHENTICATION
@@ -114,17 +130,19 @@ async def register(payload: dict = Body(...)):
     db.otps.delete_one({"email": email})
     # --------------------------------
 
+    slug = str(uuid.uuid4())
     new_applicant = {
         "email": email,
         "password": pwd_context.hash(password), 
         "schoolYear": current_school_year,
         "isSubmitted": False,
         "admissionStatus": "Pending",
+        "tracking_slug": slug,
         "createdAt": datetime.utcnow()
     }
     
     applicant_collection.insert_one(new_applicant)
-    return {"msg": "Registered successfully"}
+    return {"msg": "Registered successfully", "tracking_slug": slug}
 
 @router.post("/login")
 async def login(payload: dict = Body(...)):
@@ -146,20 +164,21 @@ async def login(payload: dict = Body(...)):
             raise HTTPException(status_code=401, detail="Invalid credentials")
         applicant_collection.update_one({"_id": applicant["_id"]}, {"$set": {"password": pwd_context.hash(password)}})
 
-    import jwt
-    import os
-    
-    SECRET_KEY = os.getenv("JWT_SECRET")
-    
+    slug = applicant.get("tracking_slug")
+    if not slug:
+        slug = str(uuid.uuid4())
+        applicant_collection.update_one({"_id": applicant["_id"]}, {"$set": {"tracking_slug": slug}})
+        applicant["tracking_slug"] = slug
+
     token = jwt.encode(
-        {"id": str(applicant["_id"]), "role": "Applicant"},
+        {"id": str(applicant["_id"]), "role": "Applicant", "tracking_slug": slug},
         SECRET_KEY,
         algorithm="HS256"
     )
 
     return {
         "token": token,
-        "applicant": {"id": str(applicant["_id"]), "email": applicant["email"]}
+        "applicant": {"id": str(applicant["_id"]), "email": applicant["email"], "tracking_slug": slug}
     }
 
 # ==========================================
@@ -594,3 +613,188 @@ async def get_interview_slots(year: str = None, month: str = None, user: dict = 
         slots.append(slot)
         
     return slots
+
+# ==========================================
+# DOCUMENT DELETION & SLOT DECISIONS
+# ==========================================
+
+@router.delete("/document")
+async def delete_document(
+    payload: dict = Body(...),
+    user: dict = Depends(applicant_only)
+):
+    settings = settings_collection.find_one({"institute": "Admission"})
+    if settings and settings.get("admissionStatus") in ["Closed", False]:
+        raise HTTPException(status_code=403, detail="The admission portal is currently closed. You are in read-only mode.")
+
+    applicant = applicant_collection.find_one({"_id": ObjectId(user["id"])})
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Applicant not found")
+
+    if applicant.get("isSubmitted"):
+        raise HTTPException(status_code=403, detail="Application already submitted. Editing is disabled.")
+
+    path_to_delete = payload.get("path")
+    if not path_to_delete:
+        raise HTTPException(status_code=400, detail="Document path required")
+
+    applicant_collection.update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$pull": {"documents": {"path": path_to_delete}}}
+    )
+    
+    return {"msg": "Document deleted successfully"}
+
+@router.post("/admission-decision")
+async def admission_decision(payload: AdmissionDecisionPayload = Body(...), user: dict = Depends(applicant_only)):
+    payload_dict = payload.model_dump()
+    from routes.pre_admission.admin import get_next_student_number, get_auto_section, get_applicant_course, get_applicant_school_year
+    
+    decision = "Accepted" if payload_dict.get("isAccepted") else "Declined"
+
+    applicant = applicant_collection.find_one({"_id": ObjectId(user["id"])})
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Applicant not found.")
+
+    admission_status = (applicant.get("admissionStatus") or "").lower()
+    slot_status = (applicant.get("slotStatus") or "Pending").lower()
+
+    if slot_status == "admitted" and decision == "Accepted":
+        return {"msg": "Offer already accepted.", "decision": decision, "applicantId": applicant.get("applicantId", "")}
+
+    if admission_status != "confirmed" or slot_status != "pending":
+        raise HTTPException(status_code=400, detail="Applicant must be accepted by admin before confirming the slot.")
+
+    update_fields = {"slotStatus": "Admitted" if decision == "Accepted" else "Forfeited"}
+
+    if decision == "Accepted":
+        update_fields["admissionStatus"] = "Admitted"
+        update_fields["admissionRemarks"] = "Accepted"
+        current_app_id = applicant.get("applicantId", "")
+        if not current_app_id or current_app_id.startswith("APP-"):
+            current_year = datetime.now().year
+            new_student_number = get_next_student_number(current_year)
+            update_fields["applicantId"] = new_student_number
+        elif not current_app_id.startswith("A-"):
+            update_fields["applicantId"] = f"A-{current_app_id}"
+        if not applicant.get("section"):
+            course = get_applicant_course(applicant)
+            sy = get_applicant_school_year(applicant)
+            update_fields["section"] = get_auto_section(course, sy)
+
+    elif decision == "Declined":
+        update_fields["admissionStatus"] = "Forfeit"
+        update_fields["applicantId"] = "Forfeit"
+        old_email = applicant.get("email", "")
+        if old_email:
+            user_collection.update_one(
+                {"email": old_email},
+                {"$set": {"status": "Forfeit", "role": "Forfeit"}}
+            )
+
+    applicant_collection.update_one(
+        {"_id": ObjectId(user["id"])},
+        {"$set": update_fields}
+    )
+    
+    updated = applicant_collection.find_one({"_id": ObjectId(user["id"])})
+    new_id = updated.get("applicantId", "") if updated else ""
+    
+    return {"msg": f"Admission offer {decision.lower()} successfully.", "decision": decision, "applicantId": new_id}
+
+@router.post("/accept-offer-public")
+@limiter.limit("10/minute")
+async def accept_offer_public(request: Request, payload: AcceptOfferPayload = Body(...)):
+    """
+    IDOR Mitigation via UUIDv4 Tracking Slug / Authentication.
+    Applicants can accept their offer via their secure UUIDv4 tracking_slug (sent in email)
+    or via authenticated session token. Raw ObjectIds or sequential integers are strictly rejected.
+    """
+    from routes.pre_admission.admin import get_next_student_number, get_auto_section, get_applicant_course, get_applicant_school_year
+
+    applicant = None
+    target_slug = payload.tracking_slug or payload.slug or payload.id
+
+    # 1. Check for authenticated applicant session first
+    auth_header = request.headers.get("Authorization", "")
+    token_str = auth_header.split("Bearer ")[-1] if "Bearer " in auth_header else ""
+    if token_str:
+        try:
+            token_data = jwt.decode(token_str, SECRET_KEY, algorithms=["HS256"])
+            if token_data.get("role") == "Applicant" and token_data.get("id"):
+                applicant = applicant_collection.find_one({"_id": ObjectId(token_data["id"])})
+        except Exception:
+            pass
+
+    # 2. If not authenticated via token, resolve strictly via tracking_slug (UUIDv4)
+    if not applicant:
+        if not target_slug:
+            raise HTTPException(status_code=400, detail="Missing secure tracking slug or authentication.")
+            
+        target_slug = str(target_slug).strip()
+        try:
+            uuid.UUID(target_slug)
+        except (ValueError, AttributeError):
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid tracking reference format. Raw database IDs or sequential numbers are not permitted."
+            )
+        
+        applicant = applicant_collection.find_one({"tracking_slug": target_slug})
+
+    if not applicant:
+        raise HTTPException(status_code=404, detail="Applicant not found.")
+
+    applicant_id = str(applicant["_id"])
+    admission_status = (applicant.get("admissionStatus") or "").lower()
+    slot_status = (applicant.get("slotStatus") or "Pending").lower()
+
+    if slot_status == "admitted" or admission_status == "admitted":
+        return {
+            "msg": "Offer already accepted.", 
+            "applicantId": applicant.get("applicantId", ""),
+            "tracking_slug": applicant.get("tracking_slug")
+        }
+
+    if slot_status in ("forfeit", "forfeited") or admission_status in ("forfeit", "forfeited"):
+        raise HTTPException(status_code=400, detail="This slot has been forfeited and cannot be accepted.")
+
+    eligible = (
+        (admission_status == "confirmed" and slot_status == "pending") or
+        (admission_status == "passed")
+    )
+    if not eligible:
+        raise HTTPException(status_code=400, detail="This slot is not available for acceptance at this time.")
+
+    update_fields = {
+        "slotStatus": "Admitted",
+        "admissionStatus": "Admitted",
+        "admissionRemarks": "Accepted",
+        "updatedAt": datetime.utcnow()
+    }
+
+    current_app_id = applicant.get("applicantId", "")
+    if not current_app_id or current_app_id.startswith("APP-"):
+        current_year = datetime.now().year
+        new_student_number = get_next_student_number(current_year)
+        update_fields["applicantId"] = new_student_number
+    elif not current_app_id.startswith("A-"):
+        update_fields["applicantId"] = f"A-{current_app_id}"
+    if not applicant.get("section"):
+        course = get_applicant_course(applicant)
+        sy = get_applicant_school_year(applicant)
+        update_fields["section"] = get_auto_section(course, sy)
+
+    applicant_collection.update_one(
+        {"_id": ObjectId(applicant_id)},
+        {"$set": update_fields}
+    )
+
+    updated = applicant_collection.find_one({"_id": ObjectId(applicant_id)})
+    new_id = updated.get("applicantId", "") if updated else ""
+
+    return {
+        "msg": "Admission offer accepted successfully.", 
+        "applicantId": new_id,
+        "tracking_slug": updated.get("tracking_slug")
+    }

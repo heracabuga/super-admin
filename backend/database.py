@@ -25,7 +25,7 @@ async def ping_db():
         print(f"Failed to connect to MongoDB Atlas: {e}")
 
 
-# SYNC Pre-Admission
+# SYNC
 sync_client = MongoClient(MONGO_URI)
 
 db = sync_client["iiti_db"] 
@@ -38,3 +38,12 @@ settings_collection = db["systemsettings"]
 audit_collection = db["auditlogs"]
 notification_collection = db["notifications"]
 student_collection = db["students"]
+
+# Background indexes for optimal query & sorting performance (Pre-Admission)
+try:
+    applicant_collection.create_index([("schoolYear", 1), ("createdAt", -1)], background=True)
+    applicant_collection.create_index([("isSubmitted", 1)], background=True)
+    applicant_collection.create_index([("applicantId", 1)], background=True)
+    applicant_collection.create_index("tracking_slug", unique=True, sparse=True, background=True)
+except Exception as e:
+    print(f"[INFO] Pre-admission index notice: {e}")

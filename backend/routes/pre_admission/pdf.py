@@ -1,23 +1,42 @@
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Response, Depends
 from fpdf import FPDF
 from bson import ObjectId
 from bson.errors import InvalidId
 from datetime import datetime
 from database import applicant_collection
+from middlewares.auth import get_current_user
 
 router = APIRouter(prefix="/api/admin/pdf", tags=["PDF"])
 
 @router.get("/admission-slip/{id}")
-async def generate_admission_slip(id: str):
-    clean_id = id.replace('_slip.pdf', '')
+async def generate_admission_slip(id: str, user: dict = Depends(get_current_user)):
+    clean_id = id.replace('_slip.pdf', '').strip()
     
-    try:
+    applicant = None
+    # 1. Search by secure tracking_slug first (IDOR prevention)
+    if clean_id:
+        applicant = applicant_collection.find_one({"tracking_slug": clean_id})
+
+    # 2. If not found by tracking_slug, fallback to ObjectId (for Admins or internal references)
+    if not applicant and ObjectId.is_valid(clean_id):
         applicant = applicant_collection.find_one({"_id": ObjectId(clean_id)})
-    except InvalidId:
-        raise HTTPException(status_code=400, detail="Invalid Applicant ID format")
         
     if not applicant:
         raise HTTPException(status_code=404, detail="Applicant not found")
+
+    # IDOR Check:
+    # - If applicant, ensure they are requesting their own slip
+    # - If accessing by ObjectId directly without being an Admin/SuperAdmin, deny access
+    is_slug_match = bool(applicant.get("tracking_slug") and clean_id == applicant.get("tracking_slug"))
+    user_role = user.get("role")
+    
+    if user_role == "Applicant":
+        user_id = str(user.get("id"))
+        user_slug = user.get("tracking_slug")
+        if str(applicant["_id"]) != user_id and applicant.get("tracking_slug") != user_slug and not is_slug_match:
+            raise HTTPException(status_code=403, detail="Access denied: You cannot view another applicant's admission slip.")
+    elif user_role not in ["Admin", "SuperAdmin"] and not is_slug_match:
+        raise HTTPException(status_code=403, detail="Access denied: Administrative privileges required.")
 
     pdf = FPDF(format='A4')
     pdf.add_page()
@@ -56,7 +75,8 @@ async def generate_admission_slip(id: str):
     pdf.set_font("helvetica", "B", 12)
     pdf.cell(50, 10, "Course Choice:")
     pdf.set_font("helvetica", "", 12)
-    pdf.cell(0, 10, applicant.get("firstChoice", "N/A"), new_x="LMARGIN", new_y="NEXT")
+    display_course = applicant.get("reassignedProgram") or applicant.get("firstChoice") or "N/A"
+    pdf.cell(0, 10, display_course, new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_xy(25, 95)
     pdf.set_font("helvetica", "B", 12)

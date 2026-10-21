@@ -1,7 +1,6 @@
-import { useState, useEffect, useRef, useContext } from "react";
-
+import { useState, useEffect, useRef } from "react";
 import api, { BASE_URL } from "../../../services/api";
-import { ToastContext } from "../context/ToastContext.jsx";
+import { useToast } from "../context/ToastContext.jsx";
 import { PageLoader, ButtonSpinner } from "../components/Loaders.jsx";
 import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Save, Edit3, Shield, Activity, AlertTriangle, Trash2, Clock, User, CheckCircle, UserCog,
@@ -10,12 +9,14 @@ import {
 import ReactQuill from "react-quill-new";
 import "react-quill-new/dist/quill.snow.css";
 
-export default function Settings() {
-  const { toast } = useContext(ToastContext);
+export default function Settings({ navigateToTab, navigationState }) {
+  const { toast } = useToast();
+  const isSidebarOpen = false;
 
-  const [activeTab, setActiveTab] = useState(() => localStorage.getItem("adminSettingsTab") || "general");
+  const [activeTab, setActiveTab] = useState(() => sessionStorage.getItem("adminSettingsTab") || localStorage.getItem("adminSettingsTab") || "general");
 
   useEffect(() => {
+    sessionStorage.setItem("adminSettingsTab", activeTab);
     localStorage.setItem("adminSettingsTab", activeTab);
   }, [activeTab]);
 
@@ -26,7 +27,7 @@ export default function Settings() {
   const [pastAcademicYears, setPastAcademicYears] = useState([]);
   const [systemAdminEmail, setSystemAdminEmail] = useState("");
 
-  const [currentUserRole, setCurrentUserRole] = useState("SuperAdmin");
+  const [currentUserRole, setCurrentUserRole] = useState("Admin");
 
   const [isArchiveMode, setIsArchiveMode] = useState(false);
   const [targetYear, setTargetYear] = useState("");
@@ -83,7 +84,7 @@ export default function Settings() {
 
   // Specific Institute Settings for Standard Admins
   const [myInstitute, setMyInstitute] = useState({
-    _id: "", name: "", abbreviation: "", address: "", dailyLimit: ""
+    _id: "", name: "", abbreviation: "", address: "", dailyLimit: "", blockedDates: [], requiresInterview: true
   });
 
   const [securitySettings, setSecuritySettings] = useState({ twoFactorAuth: false });
@@ -180,49 +181,51 @@ export default function Settings() {
 
     const fetchInitialData = async () => {
       let currentRole = "Admin";
-      let instAbbr = "";
+      let instAbbr = "IITI";
 
       try {
         const profileRes = await api.get('/admin/profile');
         if (profileRes.data && profileRes.data.role) {
+          // In Pre-Admission modules, enforce Normal Admin (IITI Institute Admin)
           currentRole = "Admin";
-          instAbbr = profileRes.data.institute;
-
-          setCurrentUserRole(currentRole);
+          instAbbr = (profileRes.data.institute && profileRes.data.institute !== "Admission") ? profileRes.data.institute : "IITI";
+          setCurrentUserRole("Admin");
+          setAdminInstitute(instAbbr);
           if (profileRes.data.email) {
             setSystemAdminEmail(profileRes.data.email);
           }
           if (profileRes.data.username) {
             setCurrentUsername(profileRes.data.username);
           }
-          if (currentRole !== "SuperAdmin" && (activeTab === "admin" || activeTab === "maintenance" || activeTab === "institutes_programs")) {
+          if (activeTab === "admin" || activeTab === "maintenance" || activeTab === "institutes_programs" || activeTab === "content" || activeTab === "notification") {
             setActiveTab("general");
           }
-          if (activeTab === "notification") setActiveTab("general");
         } else {
           setCurrentUserRole("Admin");
-          if (activeTab === "admin" || activeTab === "maintenance" || activeTab === "institutes_programs" || activeTab === "notification") setActiveTab("general");
+          setAdminInstitute("IITI");
+          if (activeTab === "admin" || activeTab === "maintenance" || activeTab === "institutes_programs" || activeTab === "content" || activeTab === "notification") setActiveTab("general");
         }
       } catch (error) {
         console.error("Failed to fetch profile role");
         setCurrentUserRole("Admin");
-        if (activeTab === "admin" || activeTab === "maintenance" || activeTab === "institutes_programs" || activeTab === "notification") setActiveTab("general");
+        setAdminInstitute("IITI");
+        if (activeTab === "admin" || activeTab === "maintenance" || activeTab === "institutes_programs" || activeTab === "content" || activeTab === "notification") setActiveTab("general");
       }
 
       try {
         const instRes = await api.get('/admin/institutes');
         setInstitutes(instRes.data);
-        if (currentRole !== "SuperAdmin") {
-          const userInst = instRes.data.find(i => i.abbreviation === instAbbr);
-          if (userInst) {
-            setMyInstitute({
-              _id: userInst._id,
-              name: userInst.name || "",
-              abbreviation: userInst.abbreviation || "",
-              address: userInst.address || "",
-              dailyLimit: userInst.dailyLimit || ""
-            });
-          }
+        const userInst = instRes.data.find(i => i.abbreviation === instAbbr) || instRes.data.find(i => i.abbreviation === "IITI");
+        if (userInst) {
+          setMyInstitute({
+            _id: userInst._id,
+            name: userInst.name || "",
+            abbreviation: userInst.abbreviation || "",
+            address: userInst.address || "",
+            dailyLimit: userInst.dailyLimit || "",
+            blockedDates: Array.isArray(userInst.blockedDates) ? userInst.blockedDates : [],
+            requiresInterview: userInst.requiresInterview !== false
+          });
         }
       } catch (e) { console.error(e); }
 
@@ -354,6 +357,20 @@ export default function Settings() {
     try {
       const res = await api.get('/admin/institutes');
       setInstitutes(res.data);
+      if (currentUserRole !== "SuperAdmin") {
+        const userInst = res.data.find(i => i.abbreviation === myInstitute.abbreviation || i._id === myInstitute._id);
+        if (userInst) {
+          setMyInstitute({
+            _id: userInst._id,
+            name: userInst.name || "",
+            abbreviation: userInst.abbreviation || "",
+            address: userInst.address || "",
+            dailyLimit: userInst.dailyLimit || "",
+            blockedDates: Array.isArray(userInst.blockedDates) ? userInst.blockedDates : [],
+            requiresInterview: userInst.requiresInterview !== false
+          });
+        }
+      }
     } catch (err) {
       console.error("Failed to load institutes");
     }
@@ -567,6 +584,54 @@ export default function Settings() {
       fetchInstitutes();
     } catch (err) {
       toast.info("Failed to save institute profile.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAddInstituteBlockedDate = async () => {
+    if (!newBlockedDate) {
+      toast.warning("Please select a date first.");
+      return;
+    }
+    const currentBlocked = myInstitute.blockedDates || [];
+    if (!currentBlocked.includes(newBlockedDate)) {
+      const newBlocked = [...currentBlocked, newBlockedDate].sort();
+      const updatedInstitute = { ...myInstitute, blockedDates: newBlocked };
+      setMyInstitute(updatedInstitute);
+      try {
+        setIsLoading(true);
+        await api.put(`/admin/institutes/${myInstitute._id}`, updatedInstitute);
+        toast.info("Blocked date added successfully!");
+        setIsBlockedDateModalOpen(false);
+        setNewBlockedDate("");
+        await logAction(`Added Blocked Date (${newBlockedDate}) for Institute: ${myInstitute.abbreviation}`);
+        fetchInstitutes();
+      } catch (err) {
+        toast.error("Failed to save blocked date.");
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      toast.warning("This date is already blocked for your institute.");
+    }
+  };
+
+  const handleRemoveInstituteBlockedDate = async (index) => {
+    if (isArchiveMode) return;
+    const currentBlocked = myInstitute.blockedDates || [];
+    const dateToRemove = currentBlocked[index];
+    const newBlocked = currentBlocked.filter((_, i) => i !== index);
+    const updatedInstitute = { ...myInstitute, blockedDates: newBlocked };
+    setMyInstitute(updatedInstitute);
+    try {
+      setIsLoading(true);
+      await api.put(`/admin/institutes/${myInstitute._id}`, updatedInstitute);
+      toast.info("Blocked date removed!");
+      await logAction(`Removed Blocked Date (${dateToRemove}) for Institute: ${myInstitute.abbreviation}`);
+      fetchInstitutes();
+    } catch (err) {
+      toast.error("Failed to remove blocked date.");
     } finally {
       setIsLoading(false);
     }
@@ -874,15 +939,7 @@ export default function Settings() {
 
   const TABS = [
     { label: 'General Settings', key: 'general' },
-    ...(currentUserRole === "SuperAdmin" ? [
-      { label: 'Manage Admins', key: 'admin' },
-      { label: 'Institutes & Programs', key: 'institutes_programs' },
-      { label: 'Content Management', key: 'content' }
-    ] : []),
-    { label: 'Security & Logs', key: 'security' },
-    ...(currentUserRole === "SuperAdmin" ? [
-      { label: 'System Maintenance', key: 'maintenance' }
-    ] : [])
+    { label: 'Security & Logs', key: 'security' }
   ];
 
   if (initialLoading) {
@@ -893,7 +950,7 @@ export default function Settings() {
   const currentSem = settings.schoolYear ? settings.schoolYear.substring(10) : "";
 
   return (
-    <div className={`h-full w-full bg-gray-50 font-sans overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${false ? 'ml-2' : 'ml-2'
+    <div className={`h-full w-full bg-gray-50 font-sans overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${isSidebarOpen ? 'ml-2' : 'ml-2'
       }`}>
 
       {/* Main container */}
@@ -901,6 +958,8 @@ export default function Settings() {
 
         {/* Header (scrolls with content) */}
         <div className="mb-6 flex-none">
+          
+
           {isArchiveMode && (
             <div className="mt-4 mb-2 bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-lg flex justify-between items-center">
               <div className="flex items-center gap-2 text-sm font-medium">
@@ -919,7 +978,7 @@ export default function Settings() {
           {/* === MODALS === */}
 
           {instituteModal.isOpen && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
               <div className="bg-white rounded-xl p-6 max-w-md w-full shadow-2xl animate-in fade-in zoom-in duration-200">
                 <h3 className="font-bold text-[16px] mb-4 text-[#376e35] flex items-center gap-2"><BookOpen size={20} /> {instituteModal.isEdit ? "Edit Institute" : "Add Institute"}</h3>
                 <div className="space-y-4">
@@ -931,6 +990,17 @@ export default function Settings() {
                     <label className="text-xs font-bold text-gray-500 uppercase">Abbreviation</label>
                     <input type="text" value={instituteModal.data.abbreviation} onChange={e => setInstituteModal({ ...instituteModal, data: { ...instituteModal.data, abbreviation: e.target.value.toUpperCase() } })} className="w-full border uppercase p-2.5 rounded-lg outline-none focus:border-[#376e35] font-medium" />
                   </div>
+                  <div className="pt-1">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={instituteModal.data.requiresInterview !== false}
+                        onChange={e => setInstituteModal({ ...instituteModal, data: { ...instituteModal.data, requiresInterview: e.target.checked } })}
+                        className="w-4 h-4 accent-[#376e35] rounded cursor-pointer"
+                      />
+                      <span className="text-xs font-bold text-gray-700">Conducts Admission Interview</span>
+                    </label>
+                  </div>
                 </div>
                 <div className="mt-6 flex justify-end gap-3 border-t pt-4">
                   <button onClick={() => setInstituteModal({ isOpen: false, data: { name: "", abbreviation: "", address: "", dailyLimit: "" }, isEdit: false })} className="px-[14px] py-[6px] text-gray-600 font-semibold hover:bg-gray-100 rounded-lg text-[12px]">Cancel</button>
@@ -941,7 +1011,7 @@ export default function Settings() {
           )}
 
           {courseModal.isOpen && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
               <div className="bg-white rounded-xl p-6 max-w-md w-full shadow-2xl animate-in fade-in zoom-in duration-200">
                 <h3 className="font-bold text-[16px] mb-4 text-[#376e35] flex items-center gap-2"><BookOpen size={20} /> {courseModal.isEdit ? "Edit Course" : "Add Program"}</h3>
                 <div className="space-y-4">
@@ -968,11 +1038,25 @@ export default function Settings() {
                   </div>
                   <div className="space-y-1">
                     <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider ml-1">Application Limit (Max Submissions)</label>
-                    <input type="number" min="0" value={courseModal.data.applicationLimit || ""} onChange={e => { const val = e.target.value; setCourseModal(prev => ({ ...prev, data: { ...prev.data, applicationLimit: val } })); }} className="w-full border p-2.5 rounded-lg outline-none focus:border-[#376e35] font-medium" />
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0 (Unlimited)"
+                      value={courseModal.data.applicationLimit !== undefined && courseModal.data.applicationLimit !== null ? courseModal.data.applicationLimit : ""}
+                      onChange={e => { const val = e.target.value; setCourseModal(prev => ({ ...prev, data: { ...prev.data, applicationLimit: val } })); }}
+                      className="w-full border p-2.5 rounded-lg outline-none focus:border-[#376e35] font-medium"
+                    />
                   </div>
                   <div className="space-y-1">
                     <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider ml-1">Program Capacity (Target Intake)</label>
-                    <input type="number" min="0" value={courseModal.data.limit || ""} onChange={e => { const val = e.target.value; setCourseModal(prev => ({ ...prev, data: { ...prev.data, limit: val } })); }} className="w-full border p-2.5 rounded-lg outline-none focus:border-[#376e35] font-medium" />
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0 (Unlimited)"
+                      value={courseModal.data.limit !== undefined && courseModal.data.limit !== null ? courseModal.data.limit : ""}
+                      onChange={e => { const val = e.target.value; setCourseModal(prev => ({ ...prev, data: { ...prev.data, limit: val } })); }}
+                      className="w-full border p-2.5 rounded-lg outline-none focus:border-[#376e35] font-medium"
+                    />
                   </div>
                   <div className="space-y-1 flex items-center gap-2 mt-2">
                     <input
@@ -996,7 +1080,7 @@ export default function Settings() {
           )}
 
           {modals.restart && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
               <div className="bg-white rounded-xl p-6 max-w-sm w-full shadow-2xl animate-in fade-in zoom-in duration-200">
                 <div className="flex items-center gap-2 text-[#376e35] mb-2">
                   <History size={24} />
@@ -1022,7 +1106,7 @@ export default function Settings() {
           )}
 
           {modals.reset && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
               <div className="bg-white rounded-xl p-6 max-w-sm w-full shadow-2xl animate-in fade-in zoom-in duration-200">
                 <div className="flex items-center gap-2 text-red-600 mb-2">
                   <AlertTriangle size={24} />
@@ -1055,7 +1139,7 @@ export default function Settings() {
 
 
           {modals.toggleAdmission && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
               <div className="bg-white rounded-xl p-6 max-w-sm w-full shadow-2xl animate-in fade-in zoom-in duration-200">
                 <div className={`flex items-center gap-2 mb-2 ${settings.admissionOpen ? "text-red-600" : "text-[#376e35]"}`}>
                   <AlertTriangle size={24} />
@@ -1104,7 +1188,7 @@ export default function Settings() {
           )}
 
           {modals.saveAdmission && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
               <div className="bg-white rounded-xl p-6 max-w-sm w-full shadow-2xl animate-in fade-in zoom-in duration-200">
                 <div className="flex items-center gap-2 text-[#376e35] mb-2">
                   <Save size={24} />
@@ -1124,7 +1208,7 @@ export default function Settings() {
           )}
 
           {editAdminModal.isOpen && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
               <div className="bg-white rounded-xl p-6 max-w-md w-full shadow-2xl animate-in fade-in zoom-in duration-200">
                 <h3 className="font-bold text-[16px] mb-4 text-[#376e35] flex items-center gap-2"><Edit3 size={20} /> Edit Administrator</h3>
                 <div className="space-y-4">
@@ -1318,6 +1402,26 @@ export default function Settings() {
                             />
                           </div>
                         </div>
+                      </div>
+
+                      {/* Section Capacity Setting */}
+                      <div className="mt-6 border border-gray-200 rounded-xl p-6 bg-white shadow-sm">
+                        <label className="font-bold text-[16px] flex items-center gap-2 text-black mb-1">
+                          <Landmark size={18} /> Section Capacity (Max Students per Section)
+                        </label>
+                        <p className="text-gray-500 text-xs mb-3">Controls the maximum number of admitted students allocated per section before automatically rolling over to the next section (e.g. A-1, A-2).</p>
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          value={settings.sectionCapacity || settings.portalSettings?.sectionCapacity || 45}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value) || 45;
+                            setSettings(prev => ({ ...prev, sectionCapacity: val, portalSettings: { ...prev.portalSettings, sectionCapacity: val } }));
+                          }}
+                          disabled={isArchiveMode || !canEditAdmission}
+                          className="w-full max-w-xs border rounded-lg px-4 py-2.5 outline-none bg-white border-black text-black focus:ring-2 focus:ring-[#376e35]"
+                        />
                       </div>
 
                       {/* Matrix Configuration Accordion (Super Admin Only) */}
@@ -1533,6 +1637,22 @@ export default function Settings() {
                           />
                         </InputGroup>
                       </div>
+
+                      <div className="lg:col-span-2 pt-2">
+                        <label className="flex items-center gap-3 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={myInstitute.requiresInterview !== false}
+                            onChange={(e) => setMyInstitute({ ...myInstitute, requiresInterview: e.target.checked })}
+                            disabled={!isEditingProfile || isArchiveMode}
+                            className="w-4 h-4 accent-[#376e35] rounded cursor-pointer"
+                          />
+                          <div>
+                            <span className="text-sm font-bold text-gray-800">Conducts Admission Interview</span>
+                            <p className="text-xs text-gray-500">Uncheck if this institute does not require interviews. Applicants will be scheduled for submission of hardcopy initial requirements instead.</p>
+                          </div>
+                        </label>
+                      </div>
                     </div>
 
                     {!isArchiveMode && (
@@ -1547,6 +1667,71 @@ export default function Settings() {
                         </button>
                       </div>
                     )}
+                  </div>
+
+                  {/* Blocked Dates Management for Institute Admin */}
+                  <div className="bg-white border border-gray-200 rounded-2xl p-6 lg:p-8 shadow-sm">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+                      <div>
+                        <h2 className="text-xl lg:text-2xl font-bold text-black flex items-center gap-3">
+                          <CalendarIcon className="text-[#376e35]" size={28} /> Blocked Dates in Schedule
+                        </h2>
+                        <p className="text-gray-500 text-xs mt-1">
+                          Configure dates when {myInstitute.name || myInstitute.abbreviation || "your institute"} will not accept applicant appointments.
+                        </p>
+                      </div>
+                      {!isArchiveMode && (
+                        <button
+                          onClick={() => {
+                            setNewBlockedDate("");
+                            setIsBlockedDateModalOpen(true);
+                          }}
+                          className="flex items-center gap-1.5 font-bold py-2 px-4 text-[12px] rounded border bg-[#376e35] text-white hover:bg-green-800 transition-colors shadow-sm"
+                        >
+                          <Plus size={14} /> Add Date
+                        </button>
+                      )}
+                    </div>
+                    <hr className="border-gray-300 mb-6" />
+
+                    <div className="border border-gray-200 rounded-lg overflow-hidden bg-white max-h-[350px] overflow-y-auto">
+                      <table className="w-full text-left border-collapse text-[12px]">
+                        <thead className="sticky top-0 z-10">
+                          <tr className="bg-gray-50 text-gray-600 text-[11px] uppercase">
+                            <th className="px-4 py-2.5 font-bold border-b border-gray-200">Date</th>
+                            <th className="px-4 py-2.5 font-bold border-b border-gray-200 text-center w-[120px]">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white">
+                          {myInstitute.blockedDates && myInstitute.blockedDates.length > 0 ? (
+                            myInstitute.blockedDates.map((date, index) => (
+                              <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors last:border-0">
+                                <td className="px-4 py-3 font-medium text-gray-800">
+                                  {new Date(date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                                </td>
+                                <td className="px-4 py-3 text-center">
+                                  {!isArchiveMode && (
+                                    <button
+                                      onClick={() => handleRemoveInstituteBlockedDate(index)}
+                                      className="text-red-500 hover:text-red-700 transition-colors p-1"
+                                      title="Remove Date"
+                                    >
+                                      <Trash2 size={16} />
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan="2" className="px-4 py-8 text-center text-gray-400 text-[12px]">
+                                No blocked dates configured for this institute. All open calendar dates are available for applicants.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
 
                 </div>
@@ -1783,7 +1968,7 @@ export default function Settings() {
                       <Plus size={14} /> Add Institute
                     </button>
                     <button
-                      onClick={() => setCourseModal({ isOpen: true, data: { name: "", abbreviation: "", institute: "", limit: 0, applicationLimit: 0, hasBoardExam: false }, isEdit: false })}
+                      onClick={() => setCourseModal({ isOpen: true, data: { name: "", abbreviation: "", institute: "", limit: "", applicationLimit: "", hasBoardExam: false }, isEdit: false })}
                       className="flex items-center gap-2 font-bold py-2 px-4 text-[12px] rounded shadow transition-colors bg-[#376e35] text-white hover:bg-green-800"
                     >
                       <Plus size={14} /> Add Program
@@ -1817,13 +2002,11 @@ export default function Settings() {
                             {c.hasBoardExam && <span className="ml-2 px-1.5 py-0.5 text-[9px] font-bold text-white bg-blue-500 rounded-md">BOARD</span>}
                           </td>
                           <td className="px-4 py-2.5 font-medium text-gray-800 text-center">{c.abbreviation}</td>
-                          <td className="px-4 py-2.5 font-medium text-gray-800 text-center">
-                            {c.applicationLimit && c.applicationLimit > 0 ? c.applicationLimit : "∞"}
+                          <td className={`px-4 py-2.5 font-medium text-center ${c.applicationLimit > 0 && (c.applicants || 0) >= c.applicationLimit ? "text-red-500 font-bold" : "text-gray-800"}`}>
+                            <span>{c.applicants || 0}</span> / {c.applicationLimit && c.applicationLimit > 0 ? c.applicationLimit : "∞"}
                           </td>
-                          <td className="px-4 py-2.5 font-medium text-gray-800 text-center">
-                            <span className={c.seated >= c.limit && c.limit > 0 ? "text-red-500 font-bold" : "text-gray-700"}>
-                              {c.seated || 0}
-                            </span> / {c.limit && c.limit > 0 ? c.limit : "∞"}
+                          <td className={`px-4 py-2.5 font-medium text-center ${c.limit > 0 && (c.seated || 0) >= c.limit ? "text-red-500 font-bold" : "text-gray-800"}`}>
+                            <span>{c.seated || 0}</span> / {c.limit && c.limit > 0 ? c.limit : "∞"}
                           </td>
                           <td className="px-4 py-2.5 text-center flex justify-center gap-2">
                             <button onClick={() => { fetchInstitutes(); setCourseModal({ isOpen: true, data: c, isEdit: true }); }} className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white rounded-lg transition-all shadow-sm" title="Edit Program">
@@ -1837,7 +2020,7 @@ export default function Settings() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan="5" className="p-8 text-center text-gray-400 italic">No programs configured.</td>
+                        <td colSpan="6" className="p-8 text-center text-gray-400 italic">No programs configured.</td>
                       </tr>
                     )}
                   </tbody>
@@ -2197,74 +2380,6 @@ export default function Settings() {
                 </div>
               </div>
 
-              {/* Blocked Dates */}
-              <div className="mt-6">
-                <div className="flex justify-between items-center mb-3">
-                  <label className="block text-[13px] font-bold text-gray-700">Blocked Dates in Schedule</label>
-                  {!isArchiveMode && (
-                    <button
-                      onClick={() => {
-                        setNewBlockedDate("");
-                        setIsBlockedDateModalOpen(true);
-                      }}
-                      className="flex items-center gap-1.5 font-bold py-1.5 px-3 text-[12px] rounded border bg-[#376e35] text-white hover:bg-green-800 transition-colors shadow-sm"
-                    >
-                      <Plus size={14} /> Add Date
-                    </button>
-                  )}
-                </div>
-
-                <div className="border border-gray-200 rounded-lg overflow-hidden bg-white max-h-[300px] overflow-y-auto">
-                  <table className="w-full text-left border-collapse text-[12px]">
-                    <thead className="sticky top-0 z-10">
-                      <tr className="bg-gray-50 text-gray-600 text-[11px] uppercase">
-                        <th className="px-4 py-2.5 font-bold border-b border-gray-200">Date</th>
-                        <th className="px-4 py-2.5 font-bold border-b border-gray-200 text-center w-[100px]">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white">
-                      {settings.portalSettings?.blockedDates && settings.portalSettings.blockedDates.length > 0 ? (
-                        settings.portalSettings.blockedDates.map((date, index) => (
-                          <tr key={index} className="border-b border-gray-100 hover:bg-gray-50 transition-colors last:border-0">
-                            <td className="px-4 py-2.5 font-medium text-gray-800">
-                              {new Date(date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-                            </td>
-                            <td className="px-4 py-2.5 text-center">
-                              {!isArchiveMode && (
-                                <button
-                                  onClick={async () => {
-                                    const newBlocked = settings.portalSettings.blockedDates.filter((_, i) => i !== index);
-                                    handlePortalContentChange("blockedDates", newBlocked);
-                                    try {
-                                      setIsLoading(true);
-                                      const updatedSettings = { ...settings, portalSettings: { ...settings.portalSettings, blockedDates: newBlocked } };
-                                      await api.put('/admin/settings', formatPayloadSettings(updatedSettings));
-                                      toast.info("Blocked date removed!");
-                                    } catch (err) {
-                                      toast.error("Failed to update blocked dates.");
-                                    } finally {
-                                      setIsLoading(false);
-                                    }
-                                  }}
-                                  className="text-red-500 hover:text-red-700 transition-colors p-1"
-                                  title="Remove Date"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan="2" className="px-4 py-6 text-center text-gray-400 text-[12px]">No blocked dates added.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
               {/* Pre-Admission Scoring Criteria */}
               <div className="mt-8 border border-[#376e35]/20 rounded-xl p-6 bg-green-50/30">
                 <div className="flex justify-between items-center mb-2">
@@ -2344,7 +2459,7 @@ export default function Settings() {
 
       {/* --- CUSTOM CONFIRMATION MODAL --- */}
       {confirmActionModal.isOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-fade-in-up">
             <div className="bg-[#376e35] px-6 py-4 flex items-center justify-between">
               <h3 className="text-white font-bold text-lg">Confirm Action</h3>
@@ -2378,7 +2493,7 @@ export default function Settings() {
 
       {/* --- ADD BLOCKED DATE MODAL --- */}
       {isBlockedDateModalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-md w-full max-w-sm shadow-xl animate-fade-in-up">
             <div className="px-5 py-4 flex items-center justify-between border-b border-gray-100">
               <h3 className="font-bold text-gray-800 text-[15px]">Add Blocked Date</h3>
@@ -2403,6 +2518,10 @@ export default function Settings() {
               </button>
               <button
                 onClick={async () => {
+                  if (currentUserRole !== "SuperAdmin") {
+                    await handleAddInstituteBlockedDate();
+                    return;
+                  }
                   if (!newBlockedDate) {
                     toast.warning("Please select a date first.");
                     return;
@@ -2439,7 +2558,7 @@ export default function Settings() {
 
       {/* --- ADD/EDIT REQUIREMENT MODAL --- */}
       {reqModal.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-lg w-full max-w-md shadow-lg overflow-hidden">
             <div className="px-5 py-3 border-b border-gray-200 flex items-center justify-between">
               <h3 className="font-bold text-[14px] text-gray-800">

@@ -42,11 +42,11 @@ export default function App() {
 
   const getTabTitle = () => {
     switch (activeTab) {
-      case 'pre-admission-dashboard': return 'Pre-Admission Dashboard';
-      case 'pre-admission-applications': return 'Pre-Admission Applications';
+      case 'pre-admission-dashboard': return 'Dashboard';
+      case 'pre-admission-applications': return 'Applications';
       case 'pre-admission-pre-admission': return 'Pre-Admission';
       case 'pre-admission-post-admission': return 'Post-Admission';
-      case 'pre-admission-settings': return 'Pre-Admission Settings';
+      case 'pre-admission-settings': return 'Settings';
       case 'pre-enrollment-dashboard': return 'Enrollment Dashboard';
       case 'pre-enrollment-students': return 'Enrollment - Students';
       case 'pre-enrollment-curriculum': return 'Enrollment - Curriculum';

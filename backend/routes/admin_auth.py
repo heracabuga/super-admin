@@ -1,4 +1,6 @@
 import os
+import sys
+from pathlib import Path
 import smtplib
 import hashlib
 import secrets
@@ -11,11 +13,15 @@ from fastapi import APIRouter, Depends, HTTPException, Response, Body, Request
 from bson import ObjectId
 from passlib.context import CryptContext
 
+backend_dir = str(Path(__file__).resolve().parent.parent)
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Import database collections
 from database import user_collection, settings_collection
-from middlewares.auth import get_current_user, admin_only
+from middlewares.auth import admin_only
 
 # Set up the global auth router
 router = APIRouter(prefix="/api/admin", tags=["Global Admin Auth"])
@@ -50,7 +56,7 @@ async def login(response: Response, payload: dict = Body(...)):
             "username": "System Admin", 
             "email": "admin@example.com", 
             "password": pwd_context.hash("password123"),
-            "institute": "Admission", 
+            "institute": "IITI", 
             "role": "SuperAdmin"
         })
 
@@ -73,6 +79,25 @@ async def login(response: Response, payload: dict = Body(...)):
         if stored_password != password:
             raise HTTPException(status_code=400, detail="Invalid Credentials: Wrong password")
         user_collection.update_one({"_id": admin["_id"]}, {"$set": {"password": pwd_context.hash(password)}})
+
+    # Enforce Institute check:
+    # - SuperAdmin: permitted only for 'IITI' or 'Admission'
+    # - Admin: permitted only for 'IITI'
+    role = admin.get("role", "Admin")
+    admin_institute = str(admin.get("institute", "")).strip().upper()
+
+    if role == "SuperAdmin":
+        if admin_institute not in ["IITI", "ADMISSION"]:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access Denied: SuperAdmin accounts from institute '{admin.get('institute')}' are not authorized. Only IITI and Admission are permitted."
+            )
+    else:
+        if admin_institute != "IITI":
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access Denied: Admin accounts from institute '{admin.get('institute')}' are not authorized. Only IITI accounts are permitted."
+            )
 
     # Check system settings to see if 2FA is enabled
     settings = settings_collection.find_one({"institute": "Admission"}) or {}
@@ -118,7 +143,7 @@ async def login(response: Response, payload: dict = Body(...)):
         {
             "id": str(admin["_id"]), 
             "role": admin.get("role", "SuperAdmin"), 
-            "institute": admin.get("institute", "Admission")
+            "institute": admin.get("institute", "IITI")
         },
         SECRET_KEY,
         algorithm="HS256"
@@ -141,7 +166,7 @@ async def login(response: Response, payload: dict = Body(...)):
 async def get_admin_profile(user: dict = Depends(admin_only)):
     admin = user_collection.find_one({"_id": ObjectId(user["id"])}, {"password": 0})
     if not admin:
-        return {"username": "Default", "name": "Default", "role": "SuperAdmin", "institute": "Admission", "image": None}
+        return {"username": "Default", "name": "Default", "role": "SuperAdmin", "institute": "IITI", "image": None}
     
     return {
         "username": admin.get("username"),
@@ -195,12 +220,31 @@ async def verify_2fa(response: Response, payload: dict = Body(...)):
     if datetime.utcnow() > admin.get("loginOtpExpire", datetime.utcnow()):
         raise HTTPException(status_code=400, detail="Verification code has expired")
 
+    # Enforce Institute check:
+    # - SuperAdmin: permitted only for 'IITI' or 'Admission'
+    # - Admin: permitted only for 'IITI'
+    role = admin.get("role", "Admin")
+    admin_institute = str(admin.get("institute", "")).strip().upper()
+
+    if role == "SuperAdmin":
+        if admin_institute not in ["IITI", "ADMISSION"]:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access Denied: SuperAdmin accounts from institute '{admin.get('institute')}' are not authorized. Only IITI and Admission are permitted."
+            )
+    else:
+        if admin_institute != "IITI":
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access Denied: Admin accounts from institute '{admin.get('institute')}' are not authorized. Only IITI accounts are permitted."
+            )
+
     # Clear OTP
     user_collection.update_one({"_id": admin["_id"]}, {"$unset": {"loginOtp": "", "loginOtpExpire": ""}})
 
     SECRET_KEY = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY") or "my_super_secret_key_2026"
     token = jwt.encode(
-        {"id": str(admin["_id"]), "role": admin.get("role", "SuperAdmin"), "institute": admin.get("institute", "Admission")},
+        {"id": str(admin["_id"]), "role": admin.get("role", "SuperAdmin"), "institute": admin.get("institute", "IITI")},
         SECRET_KEY, algorithm="HS256"
     )
     

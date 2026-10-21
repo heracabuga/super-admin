@@ -1,5 +1,12 @@
 import os
+import sys
+from pathlib import Path
 from typing import List
+
+# Ensure backend directory is in sys.path for robust module resolution
+backend_dir = str(Path(__file__).resolve().parent)
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
 
 from dotenv import load_dotenv
 import dns.resolver
@@ -13,7 +20,7 @@ from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from bson import ObjectId
-from database import ping_db, db, sync_client, settings_collection, student_collection
+from database import ping_db, db, sync_client, settings_collection
 from schemas.global_schemas import AnnouncementSchema, AnnouncementUpdateSchema
 from routes.pre_admission import admin, applicant, pdf, rubric
 from utils.cleanup_cron import start_cron
@@ -37,7 +44,20 @@ from routes.enrollment import sections as enrollment_sections
 from routes.enrollment import curriculum as enrollment_curriculum
 from routes.enrollment import schedules as enrollment_schedules
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+from starlette import status
+from fastapi import Request
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.middleware import SlowAPIMiddleware
+from utils.pre_admission.limiter import limiter
+
 app = FastAPI(title="Central Admin System API")
+
+# Rate limiting state
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 store = Store(db, sync_client)
 app.state.store = store
@@ -59,6 +79,25 @@ origins = [
     "https://btech-admission.vercel.app",
 ]
 
+MAX_UPLOAD_SIZE = 10_485_760  # 10MB limit
+
+class LimitUploadSize(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ["POST", "PUT"]:
+            if 'content-length' in request.headers:
+                try:
+                    content_length = int(request.headers.get('content-length', 0))
+                except (ValueError, TypeError):
+                    content_length = 0
+                if content_length > MAX_UPLOAD_SIZE:
+                    return JSONResponse(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        content={"detail": "File size exceeds the 10MB limit. Please upload a smaller file."}
+                    )
+        return await call_next(request)
+
+app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(LimitUploadSize)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -85,6 +124,13 @@ async def startup_event():
     except Exception as e:
         print(f"[INFO] Enrollment index notice: {e}")
     print("[SUCCESS] Database Pinged and Automated Cron Jobs Initialized")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    try:
+        sync_client.close()
+    except Exception:
+        pass
 
 @app.get("/")
 async def root():

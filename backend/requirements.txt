@@ -6,10 +6,16 @@ motor
 python-dotenv
 PyJWT
 passlib[bcrypt]
-bcrypt
+bcrypt==4.0.1
 python-multipart
 dnspython
 apscheduler
 fpdf2
 reportlab
 httpx
+cloudinary==1.36.0
+slowapi==0.1.9
+openpyxl==3.1.2
+fastapi-mail==1.4.1
+httptools
+gunicorn

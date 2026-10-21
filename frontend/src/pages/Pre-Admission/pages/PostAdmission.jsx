@@ -1,11 +1,11 @@
 import { useState, useRef, useMemo, useEffect } from "react";
-import api, { BASE_URL } from "../../../services/api.js";
+import api, { BASE_URL } from "../../../services/api";
 import {
     FaSearch, FaFilter, FaFileExport, FaFileImport, FaCheck, FaChevronDown,
     FaEye, FaTimes, FaSearchPlus, FaSearchMinus, FaRedo, FaFileDownload, FaPrint, FaPlus, FaEnvelope, FaEdit, FaTrash, FaExclamationTriangle
 } from "react-icons/fa";
 import { FileText, CheckCircle, MessageSquare, Eye, Edit, MailCheck, Calendar as CalendarIcon, ChevronLeft, ChevronRight, Check, X } from "lucide-react";
-import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, ImageRun, BorderStyle } from "docx";
+import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, ImageRun, BorderStyle, VerticalAlign, Footer } from "docx";
 import { saveAs } from "file-saver";
 import { regions, provinces, cities, barangays } from 'select-philippines-address';
 
@@ -45,6 +45,15 @@ const getCourseAbbr = (courseName) => {
         return `${main}-${major}`;
     }
     return courseName.match(/[A-Z]/g)?.join('') || courseName.substring(0, 10).toUpperCase();
+};
+
+const normalizeApplicantType = (val) => {
+    if (!val) return "";
+    const s = String(val).toUpperCase();
+    if (s.includes("ALS") || s.includes("ALTERNATIVE")) return "ALS";
+    if (s.includes("TRANS")) return "TRANSFEREE";
+    if (s.includes("SHS") || s.includes("SENIOR HIGH") || s.includes("FRESHMEN")) return "SHS GRADUATE";
+    return s;
 };
 
 const getCourseAbbreviation = (courseName, coursesList) => {
@@ -139,13 +148,23 @@ const getBonus = (app) => {
     return (isTrue(info.isPwd) || isTrue(info.isIndigenous) || isTrue(info.isSoloParent) || isTrue(info.is4Ps) || isTrue(info.isOfw) || isALS) ? 5 : 0;
 };
 
+const isApplicantInterviewed = (app) => {
+    if (!app) return false;
+    return app.isInterviewed === true ||
+        (app.interviewScore !== undefined && app.interviewScore !== null && Number(app.interviewScore) > 0) ||
+        app.interviewStatus === 'Passed' ||
+        app.interviewStatus === 'Failed';
+};
+
 const calculateTotal = (app) => {
+    if (!isApplicantInterviewed(app)) return "0.00";
+
     const bcet = parseFloat(app.examScore) || 0;
     const interview = parseFloat(app.interviewScore) || 0;
     const gwa = getGWA(app);
     const bonus = getBonus(app);
 
-    if (bcet === 0 && interview === 0 && gwa === 0) return 0;
+    if (bcet === 0 && interview === 0 && gwa === 0) return "0.00";
 
     const total = bcet + ((gwa / 100) * 20) + ((interview / 100) * 25) + bonus;
     return Math.min(total, 100).toFixed(2);
@@ -372,7 +391,7 @@ const AddressDropdowns = ({ label, addressData, onChange, disabled, required = f
                         handleChange('barangay', 'barangayCode', "", "");
                     }} className="h-[36px] w-full px-3 py-2 bg-white border border-gray-400 rounded-md text-[12px] text-gray-800 shadow-sm focus:border-[#3a7538] outline-none uppercase appearance-none">
                         <option value="">PROVINCE</option>
-                        {provinceList.map(p => <option key={p.province_code} value={p.province_code}>{p.province_name}</option>)}
+                        {provinceList.map((p, idx) => <option key={`${p.province_code}-${idx}`} value={p.province_code}>{p.province_name}</option>)}
                     </select>
                 </div>
 
@@ -383,7 +402,7 @@ const AddressDropdowns = ({ label, addressData, onChange, disabled, required = f
                         handleChange('barangay', 'barangayCode', "", "");
                     }} className="h-[36px] w-full px-3 py-2 bg-white border border-gray-400 rounded-md text-[12px] text-gray-800 shadow-sm focus:border-[#3a7538] outline-none uppercase appearance-none">
                         <option value="">CITY/MUNI</option>
-                        {cityList.map(c => <option key={c.city_code} value={c.city_code}>{c.city_name}</option>)}
+                        {cityList.map((c, idx) => <option key={`${c.city_code}-${idx}`} value={c.city_code}>{c.city_name}</option>)}
                     </select>
                 </div>
 
@@ -393,11 +412,11 @@ const AddressDropdowns = ({ label, addressData, onChange, disabled, required = f
                         handleChange('barangay', 'barangayCode', e.target.value, name);
                     }} className="h-[36px] w-full px-3 py-2 bg-white border border-gray-400 rounded-md text-[12px] text-gray-800 shadow-sm focus:border-[#3a7538] outline-none uppercase appearance-none">
                         <option value="">BARANGAY</option>
-                        {barangayList.map(b => <option key={b.brgy_code} value={b.brgy_code}>{b.brgy_name}</option>)}
+                        {barangayList.map((b, idx) => <option key={`${b.brgy_code}-${idx}`} value={b.brgy_code}>{b.brgy_name}</option>)}
                     </select>
                 </div>
 
-                <InputFormField placeholder="ZIP Code" value={addressData.zip} onChange={e => onChange('zip', e.target.value)} disabled={disabled} />
+                <InputFormField placeholder="ZIP Code" value={addressData.zip} onChange={e => onChange('zip', e.target.value.replace(/\D/g, '').slice(0, 5))} disabled={disabled} />
             </div>
         </div>
     );
@@ -411,8 +430,7 @@ const SectionHeader = ({ title }) => (
 
 export default function PostAdmission({ navigateToTab, navigationState }) {
     const { toast } = useToast();
-    
-    
+    const isSidebarOpen = false;
 
     // --- STATES ---
     const [loading, setLoading] = useState(true);
@@ -420,6 +438,7 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
     const [applicants, setApplicants] = useState([]);
     const [activeYear, setActiveYear] = useState("");
     const [isArchiveMode, setIsArchiveMode] = useState(false);
+    const getColSpan = () => 6;
     const [rubricData, setRubricData] = useState(INITIAL_RUBRIC_SECTIONS);
 
     // --- PRINT STATE ---
@@ -429,18 +448,29 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
     const [forfeitApplicant, setForfeitApplicant] = useState(null);
     const printFormRef = useRef(null);
     const [printContent, setPrintContent] = useState('');
+    const isPrintingRef = useRef(false);
 
     const handlePrintApplication = useReactToPrint({
         contentRef: printFormRef,
         documentTitle: 'Application_Form',
-        onAfterPrint: () => setPrintContent('')
+        onAfterPrint: () => {
+            setPrintContent('');
+            isPrintingRef.current = false;
+        },
+        onPrintError: () => {
+            isPrintingRef.current = false;
+        }
     });
 
     useEffect(() => {
-        if (printContent) {
-            handlePrintApplication();
+        if (printContent && !isPrintingRef.current) {
+            isPrintingRef.current = true;
+            const timer = setTimeout(() => {
+                handlePrintApplication();
+            }, 300);
+            return () => clearTimeout(timer);
         }
-    }, [printContent, handlePrintApplication]);
+    }, [printContent]);
 
     // --- DYNAMIC DATA STATES ---
     const [coursesList, setCoursesList] = useState([]);
@@ -467,6 +497,7 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
 
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isInlineEditMode, setIsInlineEditMode] = useState(false);
+    const [isEditMode, setIsEditMode] = useState(false);
     const [newApplicant, setNewApplicant] = useState(null);
 
     const [selectedApplicant, setSelectedApplicant] = useState(null);
@@ -539,7 +570,7 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                     elem: app.profile?.education?.elem || { name: app.elementarySchool || app.education?.elementarySchool || "N/A", address: app.elementaryAddress || app.education?.elementaryAddress || "N/A", year: app.elementaryYear || app.education?.elementaryYear || "N/A" },
                     jhs: app.profile?.education?.jhs || { name: app.juniorHighSchool || app.education?.juniorHighSchool || "N/A", address: app.juniorHighAddress || app.education?.juniorHighAddress || "N/A", year: app.juniorHighYear || app.education?.juniorHighYear || "N/A" },
                     shs: app.profile?.education?.shs || { name: app.seniorHighSchool || app.education?.seniorHighSchool || "N/A", address: app.seniorHighAddress || app.education?.seniorHighAddress || "N/A", year: app.seniorHighYear || app.education?.seniorHighYear || "N/A", gwa: app.seniorHighGwa || app.education?.seniorHighGwa || app.gwa || "N/A", grade11Gwa: app.grade11Gwa || "", grade12Gwa: app.grade12Gwa || "", track: app.track || "", strand: app.strand || "" },
-                    tertiary: app.profile?.education?.tertiary || { name: app.collegeSchool || "N/A", address: app.collegeAddress || "N/A", year: app.collegeYear || "N/A" }
+                    tertiary: app.profile?.education?.tertiary || { name: app.collegeSchool || "N/A", address: app.collegeAddress || "N/A", year: app.collegeYear || "N/A", latestGwa: app.latestGwa || app.education?.latestGwa || app.gwa || "N/A" }
                 },
                 otherInfo: app.profile?.otherInfo || {
                     isPwd: app.disability || false, pwdDetails: app.disabilitySpec || app.disabilityDetails || "",
@@ -571,7 +602,8 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
             ]);
 
             setUserRole("Admin");
-            setUserInstitute(profileRes.data.institute || "IITI");
+            const inst = (profileRes.data?.institute && profileRes.data.institute !== "Admission") ? profileRes.data.institute : "IITI";
+            setUserInstitute(inst);
             setCoursesList(coursesRes.data || []);
             setInstitutesList(institutesRes.data || []);
 
@@ -590,14 +622,8 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                     if (!currentViewYear || currentViewYear.trim() === "") return false;
                     if (app.schoolYear !== currentViewYear) return false;
 
-                    return app.isInterviewed ||
-                        app.interviewStatus === 'Passed' ||
-                        app.interviewStatus === 'Failed' ||
-                        app.admissionStatus === 'Admitted' ||
-                        app.admissionStatus === 'Passed' ||
-                        app.admissionStatus === 'Failed' ||
-                        app.status === 'Passed' ||
-                        app.status === 'Admitted';
+                    // Strictly require the applicant to have completed an interview
+                    return isApplicantInterviewed(app);
                 });
 
                 const formatted = interviewedApps.map(app => {
@@ -655,6 +681,9 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                         interviewer: app.interviewer || "",
                         interviewScore: app.interviewScore || 0,
                         examScore: app.examScore || 0,
+                        bcetRawScore: app.bcetRawScore !== undefined ? app.bcetRawScore : null,
+                        bcetHighestScore: app.bcetHighestScore !== undefined ? app.bcetHighestScore : null,
+                        gwa: app.gwa || app.profile?.education?.shs?.gwa || null,
                         interviewSchedule: app.interviewDate || app.interviewSchedule || ""
                     };
                 });
@@ -808,15 +837,16 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
         }
 
         // 3. DROPDOWN FILTERS
-        if (typeFilter) {
+        if (typeFilter && typeFilter !== "All") {
             result = result.filter(app => {
-                const appType = (app.type || "").toUpperCase();
-                return appType === typeFilter.toUpperCase();
+                const normAppType = normalizeApplicantType(app.type || app.applicantType || app.profile?.appDetails?.applicantType);
+                const normFilter = normalizeApplicantType(typeFilter);
+                return normAppType === normFilter;
             });
         }
 
         if (statusFilter !== "All") {
-            result = result.filter(app => normalizeAdmissionRemark(app.admissionRemarks || app.status || app.admissionStatus) === statusFilter);
+            result = result.filter(app => normalizeAdmissionRemark(app.slotStatus || "Pending") === statusFilter);
         }
 
         if (courseFilter !== "All") {
@@ -827,11 +857,7 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
             });
         }
 
-        let finalResult = result.filter(app =>
-            app.admissionRemarks === 'Passed' ||
-            ['Confirmed', 'Accepted', 'Admitted'].includes(app.admissionStatus) ||
-            ['Admitted', 'Forfeit'].includes(app.slotStatus)
-        );
+        let finalResult = [...result];
 
         if (activeSortType === "name") {
             if (nameSortOrder === "A-Z") {
@@ -888,9 +914,9 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
         let accepted = 0;
         const programSeated = {};
 
-        let displayedCourses = coursesList;
-        if (userRole !== "SuperAdmin") {
-            displayedCourses = coursesList.filter(c => c.institute === userInstitute);
+        let displayedCourses = coursesList.filter(c => c.institute === "IITI");
+        if (displayedCourses.length === 0) {
+            displayedCourses = coursesList.filter(c => c.abbreviation === "BSIT" || c.name?.includes("Information Technology"));
         }
 
         displayedCourses.forEach(c => {
@@ -991,14 +1017,14 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
         const a = newApplicant.profile.appDetails;
         const f = newApplicant.profile.family;
 
-        if (!isEditMode && (!a.applicantType || !a.firstChoice || !a.secondChoice ||
-            !p.firstName || !p.middleName || !p.surname ||
+        if (!a.applicantType || !a.firstChoice || !a.secondChoice ||
+            !p.firstName || !p.surname ||
             !p.dob || !p.sex || !p.civilStatus ||
             !p.email || !p.contact ||
             !p.permAddress.houseStreet || !p.permAddress.province || !p.permAddress.city || !p.permAddress.barangay || !p.permAddress.zip ||
             !e.elem.name || !e.elem.address || !e.elem.year ||
             !e.jhs.name || !e.jhs.address || !e.jhs.year ||
-            !e.shs.name || !e.shs.address || !e.shs.year || !e.shs.gwa)) {
+            !e.shs.name || !e.shs.address || !e.shs.year || !e.shs.gwa) {
             toast.warning("Please fill out all required fields (marked with *).");
             return;
         }
@@ -1169,6 +1195,25 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
 
 
     // --- EXPORT LOGIC ---
+    const getTargetApplicants = (passedOnly = false) => {
+        let apps = selectedIds.length > 0
+            ? filteredApplicants.filter(a => selectedIds.includes(a.id))
+            : [...filteredApplicants];
+        if (passedOnly) {
+            apps = apps.filter(a => {
+                const rem = normalizeAdmissionRemark(a.slotStatus || a.admissionRemarks);
+                return rem === 'Passed' || rem === 'Admitted';
+            });
+        }
+        return apps.sort((a, b) => {
+            const getFullName = (app) => {
+                const p = app.profile?.personal || {};
+                return p.surname ? `${p.surname}, ${p.firstName}${p.middleName && p.middleName !== 'N/A' ? ' ' + p.middleName : ''}` : (app.name || "");
+            };
+            return getFullName(a).localeCompare(getFullName(b));
+        });
+    };
+
     const fetchExportPassedApplicants = async () => {
         try {
             const currentViewYear = activeYear || sessionStorage.getItem("archiveViewYear");
@@ -1540,7 +1585,9 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
 
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "AdmissionResults");
-        XLSX.writeFile(wb, `Applicant Details ${activeYear}.xlsx`);
+        const excelBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+        const blob = new Blob([excelBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8" });
+        saveAs(blob, `Applicant Details ${activeYear}.xlsx`);
         setIsExportMenuOpen(false);
     };
 
@@ -1888,10 +1935,6 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
         setIsExportMenuOpen(false);
     };
 
-    const getColSpan = () => {
-        return 6;
-    };
-
     const is2ndSemesterActive = activeYear ? activeYear.toLowerCase().includes('2nd semester') : false;
 
     if (loading && applicants.length === 0) {
@@ -1899,7 +1942,7 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
     }
 
     return (
-        <div className={`h-screen w-full bg-gray-50 font-sans overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${false ? 'ml-2' : 'ml-2'
+        <div className={`h-screen w-full bg-gray-50 font-sans overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${isSidebarOpen ? 'ml-2' : 'ml-2'
             }`}>
 
             <main className="flex-1 flex flex-col px-6 py-4 w-full h-full relative">
@@ -2000,6 +2043,16 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                                             <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className="w-full p-2 border rounded text-[12px] outline-none bg-gray-50">
                                                 <option value="Total %: Highest to Lowest">Total %: Highest to Lowest</option>
                                                 <option value="Total %: Lowest to Highest">Total %: Lowest to Highest</option>
+                                            </select>
+                                        </div>
+
+                                        <div className="mb-4">
+                                            <label className="block text-xs font-semibold mb-1 uppercase tracking-tight text-gray-600">Applicant Type</label>
+                                            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-full p-2 border rounded text-[12px] outline-none bg-gray-50">
+                                                <option value="">All Types</option>
+                                                <option value="SHS GRADUATE">Senior High School Graduate</option>
+                                                <option value="TRANSFEREE">Transferee</option>
+                                                <option value="ALS">ALS</option>
                                             </select>
                                         </div>
 
@@ -2178,10 +2231,10 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                 </div>
             </main>
 
-            {/* --- MESSAGE APPLICANT MODAL --- */}
-            {isMessageModalOpen && selectedApplicant && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center pt-6">
-                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsMessageModalOpen(false)}></div>
+      {/* --- MESSAGE APPLICANT MODAL --- */}
+      {isMessageModalOpen && selectedApplicant && (
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center pt-6">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsMessageModalOpen(false)}></div>
                     <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-lg z-10 flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
                         <div className="flex items-center justify-between bg-white border-b border-gray-200 px-6 py-4 shrink-0">
                             <h3 className="text-gray-800 font-bold uppercase tracking-wide text-[15px]">Message Applicant</h3>
@@ -2242,10 +2295,10 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                 </div>
             )}
 
-            {/* --- VIEW APPLICANT MODAL --- */}
-            {isModalOpen && selectedApplicant && (
-                <div className="fixed inset-0 z-50 flex items-start justify-center pt-6">
-                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}></div>
+      {/* --- VIEW APPLICANT MODAL --- */}
+      {isModalOpen && selectedApplicant && (
+        <div className="fixed inset-0 z-[1000] flex items-start justify-center pt-6">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}></div>
                     <div className="relative bg-white rounded-[10px] shadow-2xl w-11/12 max-w-[1400px] z-10 flex flex-col max-h-[95vh] overflow-hidden">
 
                         <div className="flex items-center justify-between bg-white border-b border-gray-200 px-6 py-4 shrink-0">
@@ -2524,6 +2577,58 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                                     <p className="text-[12px] text-gray-500 italic uppercase">No documents submitted.</p>
                                 )}
                             </div>
+
+                            {/* Applicant Ratings & Academic Evaluation */}
+                            <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+                                <SectionHeader title="Applicant Ratings & Grades" />
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                    <FormField
+                                        label="Interview Rating"
+                                        value={
+                                            selectedApplicant.interviewScore !== undefined && selectedApplicant.interviewScore !== null && Number(selectedApplicant.interviewScore) > 0
+                                                ? `${selectedApplicant.interviewScore}/100`
+                                                : (selectedApplicant.interviewScore === 0 ? "0/100" : (selectedApplicant.interviewRemarks || "—"))
+                                        }
+                                        isEditMode={false}
+                                    />
+                                    <FormField
+                                        label="BCET Score"
+                                        value={
+                                            Number(selectedApplicant.examScore) > 0
+                                                ? (selectedApplicant.bcetRawScore !== null && selectedApplicant.bcetHighestScore !== null
+                                                    ? `${selectedApplicant.bcetRawScore}/${selectedApplicant.bcetHighestScore}`
+                                                    : `${parseFloat(selectedApplicant.examScore).toFixed(2)}/50`)
+                                                : (selectedApplicant.bcetRemarks || "—")
+                                        }
+                                        isEditMode={false}
+                                    />
+                                    <FormField
+                                        label="GWA"
+                                        value={
+                                            getGWA(selectedApplicant) > 0
+                                                ? `${getGWA(selectedApplicant).toFixed(2)}`
+                                                : (selectedApplicant.profile?.education?.shs?.grade12Gwa || selectedApplicant.profile?.education?.shs?.seniorHighGwa || selectedApplicant.profile?.education?.shs?.gwa || selectedApplicant.gwa || "—")
+                                        }
+                                        isEditMode={false}
+                                    />
+                                </div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-gray-100">
+                                    <FormField
+                                        label="Overall Rating"
+                                        value={
+                                            parseFloat(calculateTotal(selectedApplicant)) > 0
+                                                ? `${calculateTotal(selectedApplicant)}%`
+                                                : "—"
+                                        }
+                                        isEditMode={false}
+                                    />
+                                    <FormField
+                                        label="Admission Remarks"
+                                        value={selectedApplicant.admissionRemarks || selectedApplicant.admissionStatus || selectedApplicant.status || "—"}
+                                        isEditMode={false}
+                                    />
+                                </div>
+                            </div>
                         </div>
 
                         <div className="bg-gray-50 border-t border-gray-300 p-4 shrink-0 flex justify-end gap-3 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
@@ -2537,11 +2642,7 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                                     </button>
                                     <button
                                         onClick={async () => {
-                                            const prevEdit = isEditMode;
-                                            setIsEditMode(true);
                                             await saveNewApplicant();
-                                            setIsEditMode(prevEdit);
-                                            setIsInlineEditMode(false);
                                         }}
                                         className="px-8 py-2 rounded bg-[#2e522a] hover:bg-[#203a1d] text-white font-bold uppercase text-[12px] transition shadow flex items-center gap-2"
                                     >
@@ -2601,9 +2702,9 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                 </div>
             )}
 
-            {/* --- PREVIEW DOCUMENT MODAL --- */}
-            {previewDoc && (
-                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      {/* --- PREVIEW DOCUMENT MODAL --- */}
+      {previewDoc && (
+        <div className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
                     <div className="bg-white w-full max-w-5xl h-[85vh] rounded-2xl flex flex-col overflow-hidden shadow-2xl relative">
                         <div className="bg-white text-[#376e35] px-6 py-4 flex justify-between items-center shrink-0 z-10 relative shadow-md">
                             <div className="flex items-center gap-4">
@@ -2675,10 +2776,10 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                 </div>
             )}
 
-            {/* --- CAPACITY WARNING MODAL --- */}
-            {capacityWarningModal && (
-                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setCapacityWarningModal(null)}></div>
+      {/* --- CAPACITY WARNING MODAL --- */}
+      {capacityWarningModal && (
+        <div className="fixed inset-0 z-[1250] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setCapacityWarningModal(null)}></div>
                     <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 relative z-10 border-t-4 border-yellow-500 animate-in fade-in zoom-in duration-200">
                         <button className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition" onClick={() => setCapacityWarningModal(null)}>&times;</button>
                         <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -2710,9 +2811,9 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
             )}
 
 
-            {isConfirmSlotModalOpen && (
-                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsConfirmSlotModalOpen(false)}></div>
+      {isConfirmSlotModalOpen && (
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsConfirmSlotModalOpen(false)}></div>
                     <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 relative z-10 animate-in fade-in zoom-in duration-200">
                         <button className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition" onClick={() => setIsConfirmSlotModalOpen(false)}>&times;</button>
                         <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -2739,9 +2840,9 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
                 </div>
             )}
 
-            {isForfeitModalOpen && (
-                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
-                    <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsForfeitModalOpen(false)}></div>
+      {isForfeitModalOpen && (
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsForfeitModalOpen(false)}></div>
                     <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 relative z-10 animate-in fade-in zoom-in duration-200">
                         <button className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition" onClick={() => setIsForfeitModalOpen(false)}>&times;</button>
                         <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -2769,7 +2870,7 @@ export default function PostAdmission({ navigateToTab, navigationState }) {
             )}
 
             {/* --- HIDDEN PRINT CONTAINER --- */}
-            <div style={{ display: "none" }}>
+            <div style={{ position: "fixed", opacity: 0, pointerEvents: "none", left: "-99999px", top: "-99999px" }}>
                 <div ref={printFormRef} dangerouslySetInnerHTML={{ __html: printContent }} />
             </div>
 

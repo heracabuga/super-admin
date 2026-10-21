@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo, useEffect } from "react";
-import api, { BASE_URL } from "../../../services/api.js";
+import api, { BASE_URL } from "../../../services/api";
 import {
   FaSearch, FaFilter, FaFileExport, FaFileImport, FaCheck, FaChevronDown,
   FaEye, FaTimes, FaSearchPlus, FaSearchMinus, FaRedo, FaFileDownload, FaPrint, FaPlus, FaEnvelope, FaEdit, FaTrash, FaExclamationTriangle
@@ -47,18 +47,27 @@ const getCourseAbbr = (courseName) => {
   return courseName.match(/[A-Z]/g)?.join('') || courseName.substring(0, 10).toUpperCase();
 };
 
+const normalizeApplicantType = (val) => {
+  if (!val) return "";
+  const s = String(val).toUpperCase();
+  if (s.includes("ALS") || s.includes("ALTERNATIVE")) return "ALS";
+  if (s.includes("TRANS")) return "TRANSFEREE";
+  if (s.includes("SHS") || s.includes("SENIOR HIGH") || s.includes("FRESHMEN")) return "SHS GRADUATE";
+  return s;
+};
+
 const getCourseAbbreviation = (courseName, coursesList) => {
   if (!courseName || courseName === "N/A") return "N/A";
 
   if (coursesList && coursesList.length > 0) {
     const haystack = courseName.trim().toLowerCase();
-  
+
     const sortedCourses = [...coursesList].sort((a, b) => (b.name || "").length - (a.name || "").length);
     const foundCourse = sortedCourses.find(c => {
       const dbName = (c.name || "").trim().toLowerCase();
       return dbName && haystack.includes(dbName);
     });
-  
+
     if (foundCourse && foundCourse.abbreviation) {
       return foundCourse.abbreviation.toUpperCase();
     }
@@ -132,13 +141,23 @@ const getBonus = (app) => {
   return (info.isPwd || info.isIndigenous || info.isSoloParent || info.is4Ps || info.isOfw || isALS) ? 5 : 0;
 };
 
+const isApplicantInterviewed = (app) => {
+  if (!app) return false;
+  return app.isInterviewed === true ||
+    (app.interviewScore !== undefined && app.interviewScore !== null && Number(app.interviewScore) > 0) ||
+    app.interviewStatus === 'Passed' ||
+    app.interviewStatus === 'Failed';
+};
+
 const calculateTotal = (app) => {
+  if (!isApplicantInterviewed(app)) return "0.00";
+
   const bcet = parseFloat(app.examScore) || 0;
   const interview = parseFloat(app.interviewScore) || 0;
   const gwa = getGWA(app);
   const bonus = getBonus(app);
 
-  if (bcet === 0 && interview === 0 && gwa === 0) return 0;
+  if (bcet === 0 && interview === 0 && gwa === 0) return "0.00";
 
   const total = bcet + ((gwa / 100) * 20) + ((interview / 100) * 25) + bonus;
   return Math.min(total, 100).toFixed(2);
@@ -370,7 +389,7 @@ const AddressDropdowns = ({ label, addressData, onChange, disabled, required = f
             handleChange('barangay', 'barangayCode', "", "");
           }} className="h-[36px] w-full px-3 py-2 bg-white border border-gray-400 rounded-md text-[12px] text-gray-800 shadow-sm focus:border-[#3a7538] outline-none uppercase appearance-none">
             <option value="">PROVINCE</option>
-            {provinceList.map(p => <option key={p.province_code} value={p.province_code}>{p.province_name}</option>)}
+            {provinceList.map((p, idx) => <option key={`${p.province_code}-${idx}`} value={p.province_code}>{p.province_name}</option>)}
           </select>
         </div>
 
@@ -381,7 +400,7 @@ const AddressDropdowns = ({ label, addressData, onChange, disabled, required = f
             handleChange('barangay', 'barangayCode', "", "");
           }} className="h-[36px] w-full px-3 py-2 bg-white border border-gray-400 rounded-md text-[12px] text-gray-800 shadow-sm focus:border-[#3a7538] outline-none uppercase appearance-none">
             <option value="">CITY/MUNI</option>
-            {cityList.map(c => <option key={c.city_code} value={c.city_code}>{c.city_name}</option>)}
+            {cityList.map((c, idx) => <option key={`${c.city_code}-${idx}`} value={c.city_code}>{c.city_name}</option>)}
           </select>
         </div>
 
@@ -391,11 +410,11 @@ const AddressDropdowns = ({ label, addressData, onChange, disabled, required = f
             handleChange('barangay', 'barangayCode', e.target.value, name);
           }} className="h-[36px] w-full px-3 py-2 bg-white border border-gray-400 rounded-md text-[12px] text-gray-800 shadow-sm focus:border-[#3a7538] outline-none uppercase appearance-none">
             <option value="">BARANGAY</option>
-            {barangayList.map(b => <option key={b.brgy_code} value={b.brgy_code}>{b.brgy_name}</option>)}
+            {barangayList.map((b, idx) => <option key={`${b.brgy_code}-${idx}`} value={b.brgy_code}>{b.brgy_name}</option>)}
           </select>
         </div>
 
-        <InputFormField placeholder="ZIP Code" value={addressData.zip} onChange={e => onChange('zip', e.target.value)} disabled={disabled} />
+        <InputFormField placeholder="ZIP Code" value={addressData.zip} onChange={e => onChange('zip', e.target.value.replace(/\D/g, '').slice(0, 5))} disabled={disabled} />
       </div>
     </div>
   );
@@ -409,8 +428,7 @@ const SectionHeader = ({ title }) => (
 
 export default function PreAdmission({ navigateToTab, navigationState }) {
   const { toast } = useToast();
-  
-  
+  const isSidebarOpen = false;
 
   // --- STATES ---
   const [loading, setLoading] = useState(true);
@@ -418,6 +436,7 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
   const [applicants, setApplicants] = useState([]);
   const [activeYear, setActiveYear] = useState("");
   const [isArchiveMode, setIsArchiveMode] = useState(false);
+  const getColSpan = () => 9;
   const [rubricData, setRubricData] = useState(INITIAL_RUBRIC_SECTIONS);
 
   // --- DYNAMIC DATA STATES ---
@@ -451,6 +470,7 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isInlineEditMode, setIsInlineEditMode] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
   const [newApplicant, setNewApplicant] = useState(null);
   const [isInterviewModalOpen, setIsInterviewModalOpen] = useState(false);
   const [selectedApplicant, setSelectedApplicant] = useState(null);
@@ -474,18 +494,29 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
   // --- PRINT STATE ---
   const printFormRef = useRef(null);
   const [printContent, setPrintContent] = useState('');
+  const isPrintingRef = useRef(false);
 
   const handlePrintApplication = useReactToPrint({
     contentRef: printFormRef,
     documentTitle: 'Application_Form',
-    onAfterPrint: () => setPrintContent('')
+    onAfterPrint: () => {
+      setPrintContent('');
+      isPrintingRef.current = false;
+    },
+    onPrintError: () => {
+      isPrintingRef.current = false;
+    }
   });
 
   useEffect(() => {
-    if (printContent) {
-      handlePrintApplication();
+    if (printContent && !isPrintingRef.current) {
+      isPrintingRef.current = true;
+      const timer = setTimeout(() => {
+        handlePrintApplication();
+      }, 300);
+      return () => clearTimeout(timer);
     }
-  }, [printContent, handlePrintApplication]);
+  }, [printContent]);
 
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
   const [messageData, setMessageData] = useState({ subject: "", message: "" });
@@ -581,7 +612,8 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
       ]);
 
       setUserRole("Admin");
-      setUserInstitute(profileRes.data.institute || "IITI");
+      const inst = (profileRes.data?.institute && profileRes.data.institute !== "Admission") ? profileRes.data.institute : "IITI";
+      setUserInstitute(inst);
       setCoursesList(coursesRes.data || []);
       setInstitutesList(institutesRes.data || []);
 
@@ -601,26 +633,21 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
           if (!currentViewYear || currentViewYear.trim() === "") return false;
           if (app.schoolYear !== currentViewYear) return false;
 
-          return app.isInterviewed ||
-            app.interviewStatus === 'Passed' ||
-            app.interviewStatus === 'Failed' ||
-            app.admissionStatus === 'Admitted' ||
-            app.admissionStatus === 'Passed' ||
-            app.admissionStatus === 'Failed' ||
-            app.status === 'Passed' ||
-            app.status === 'Admitted';
+          // Strictly require the applicant to have completed an interview
+          return isApplicantInterviewed(app);
         });
 
         const formatted = interviewedApps.map(app => {
           const safe = getSafeApplicant(app);
 
           let intStatus = "Pending";
-          if (app.interviewScore !== undefined && app.interviewScore !== null) {
+          const hasInterviewScore = app.interviewScore !== undefined && app.interviewScore !== null && Number(app.interviewScore) > 0;
+          if (hasInterviewScore) {
+            intStatus = Number(app.interviewScore) > 69 ? "Passed" : "Failed";
+          } else if (app.interviewStatus === 'Passed' || app.interviewStatus === 'Failed') {
+            intStatus = app.interviewStatus;
+          } else if (app.isInterviewed && (app.admissionStatus === 'Admitted' || app.status === 'Passed')) {
             intStatus = "Passed";
-          } else if (app.interviewStatus === 'Passed' || app.admissionStatus === 'Admitted' || app.status === 'Passed') {
-            intStatus = "Passed";
-          } else if (app.interviewStatus === 'Failed' || app.status === 'Failed') {
-            intStatus = "Failed";
           }
 
           let bcetStatus = "Pending";
@@ -649,8 +676,8 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
           } else if (intStatus === "Failed" || bcetStatus === "Failed") {
             computedAdmissionRemarks = "Failed";
           } else {
-            // By default, if they have all scores but no db status, keep them as Pending
-            // The dynamic ranker below will upgrade them to Passed or Waitlisted
+            // if they have all scores but no db status, keep them as Pending
+            // below will upgrade them to Passed or Waitlisted
             computedAdmissionRemarks = "Pending";
           }
 
@@ -794,8 +821,8 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
       const slot = (app.slotStatus || "").toString().trim();
       const isPassedInDb = ["Passed", "Admitted", "Confirmed"].includes(normalizeAdmissionRemark(app.admissionStatus));
       const isForfeited = ['Forfeit', 'Forfeited'].includes(slot) || ['Forfeit', 'Forfeited'].includes(status) || ['Forfeit', 'Forfeited'].includes(remark);
-      const hasInterview = app.isInterviewed === true || (app.interviewScore !== undefined && app.interviewScore !== null && app.interviewScore > 0) || status === 'Passed' || status === 'Failed' || status === 'Waitlisted';
-      
+      const hasInterview = isApplicantInterviewed(app);
+
       return hasInterview && !['Admitted', 'Forfeit', 'Forfeited'].includes(app.slotStatus) && app.admissionStatus !== "Confirmed" && !isForfeited && (!isPassedInDb || app.isSlidUp);
     });
 
@@ -823,8 +850,9 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
     // 3. DROPDOWN FILTERS
     if (typeFilter) {
       result = result.filter(app => {
-        const appType = (app.type || "").toUpperCase();
-        return appType === typeFilter.toUpperCase();
+        const normAppType = normalizeApplicantType(app.type || app.applicantType || app.profile?.appDetails?.applicantType);
+        const normFilter = normalizeApplicantType(typeFilter);
+        return normAppType === normFilter;
       });
     }
 
@@ -1044,7 +1072,7 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
 
   const getEmailRequirements = (app, emailType = "Admission Qualification Notice") => {
     const rawType = (app?.profile?.appDetails?.applicantType || app?.type || "").toUpperCase();
-    
+
     let type = "SHS Graduate";
     if (rawType === 'TRANSFEREE') type = "Transferee";
     else if (rawType === 'ALS' || rawType === 'ALS GRADUATE') type = "ALS";
@@ -1092,17 +1120,17 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
     const appReqs = portalSettings?.applicantRequirements || [];
     if (!appReqs.length) {
       if (type === 'TRANSFEREE') {
-        return reqs + `${counter}. Original Transcript of Records\n${counter+1}. Original Honorable Dismissal\n${counter+2}. Original Good Moral Certificate`;
+        return reqs + `${counter}. Original Transcript of Records\n${counter + 1}. Original Honorable Dismissal\n${counter + 2}. Original Good Moral Certificate`;
       } else if (type === 'ALS') {
-        return reqs + `${counter}. Original Certificate of Rating\n${counter+1}. Original ALS Certification Test Result Document`;
+        return reqs + `${counter}. Original Certificate of Rating\n${counter + 1}. Original ALS Certification Test Result Document`;
       } else {
-        return reqs + `${counter}. Original Grade 12 Report Card (Form 138)\n${counter+1}. Original Good Moral Certificate\n${counter+2}. Photocopy of SHS Diploma`;
+        return reqs + `${counter}. Original Grade 12 Report Card (Form 138)\n${counter + 1}. Original Good Moral Certificate\n${counter + 2}. Photocopy of SHS Diploma`;
       }
     }
 
     for (const req of appReqs) {
       const isTarget = !req.targetApplicant || req.targetApplicant.length === 0 || req.targetApplicant.includes(type);
-      
+
       // Check DEI docs based on condition
       const condition = req.condition;
       if (condition === "disability" && !app?.profile?.appDetails?.disability) continue;
@@ -1114,11 +1142,11 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
       const docKey = generateKey(req.documentName);
 
       if (emailType === "Admission Qualification Notice" || emailType === "Letter of Reconsideration") {
-         // ONLY include if the applicant has NOT uploaded it
-         if (uploadedKeys.includes(docKey)) continue;
+        // ONLY include if the applicant has NOT uploaded it
+        if (uploadedKeys.includes(docKey)) continue;
       } else if (emailType === "Application Received") {
-         // ONLY include if the applicant HAS uploaded it
-         if (!uploadedKeys.includes(docKey)) continue;
+        // ONLY include if the applicant HAS uploaded it
+        if (!uploadedKeys.includes(docKey)) continue;
       }
 
       if (isTarget) {
@@ -1128,7 +1156,7 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
     }
 
     if (reqs === "") {
-        return "All required documents have been submitted.";
+      return "All required documents have been submitted.";
     }
 
     return reqs.trimEnd();
@@ -1215,10 +1243,10 @@ Baliwag Polytechnic College`;
     const targetApp = applicants.find(a => a.id === targetId);
     if (!targetApp) return false;
 
-    const activeChoice = choice 
+    const activeChoice = choice
       ? getProgramForChoice(targetApp, choice)
       : (targetApp.reconsiderationProgram || (targetApp.isRejectedFirstChoice ? targetApp.profile?.appDetails?.secondChoice : targetApp.profile?.appDetails?.firstChoice));
-    
+
     const activeAbbr = getCourseAbbreviation(activeChoice, coursesList);
     const course = coursesList.find(c => c.abbreviation === activeAbbr);
     if (!course) return false;
@@ -1322,14 +1350,14 @@ Baliwag Polytechnic College`;
     const a = newApplicant.profile.appDetails;
     const f = newApplicant.profile.family;
 
-    if (!isEditMode && (!a.applicantType || !a.firstChoice || !a.secondChoice ||
-      !p.firstName || !p.middleName || !p.surname ||
+    if (!a.applicantType || !a.firstChoice || !a.secondChoice ||
+      !p.firstName || !p.surname ||
       !p.dob || !p.sex || !p.civilStatus ||
       !p.email || !p.contact ||
       !p.permAddress.houseStreet || !p.permAddress.province || !p.permAddress.city || !p.permAddress.barangay || !p.permAddress.zip ||
       !e.elem.name || !e.elem.address || !e.elem.year ||
       !e.jhs.name || !e.jhs.address || !e.jhs.year ||
-      !e.shs.name || !e.shs.address || !e.shs.year || !e.shs.gwa)) {
+      !e.shs.name || !e.shs.address || !e.shs.year || !e.shs.gwa) {
       toast.warning("Please fill out all required fields (marked with *).");
       return;
     }
@@ -1531,7 +1559,8 @@ Baliwag Polytechnic College`;
       let htmlMessage = `<div style="font-family: sans-serif; white-space: pre-wrap;">${personalizedMsg}</div>`;
       if (htmlMessage.includes("[Accept Slot]") || htmlMessage.includes("[Accept Offer]")) {
         const baseUrl = import.meta.env.VITE_APPLICANT_URL || import.meta.env.VITE_FRONTEND_URL || window.location.origin;
-        const acceptLink = `${baseUrl}/accept-offer?id=${app.rawId || app._id}`;
+        const trackingRef = app.tracking_slug || app.rawId || app._id;
+        const acceptLink = `${baseUrl}/accept-offer?slug=${trackingRef}`;
         const buttonHtml = `
           <div style="margin-top: 5px; margin-bottom: 5px;">
             <a href="${acceptLink}" style="display: inline-block; padding: 10px 24px; background-color: #376e35; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; border: 1px solid black;">Accept Slot</a>
@@ -1541,7 +1570,8 @@ Baliwag Polytechnic College`;
         personalizedMsg = personalizedMsg.replace(/\[Accept Slot\]|\[Accept Offer\]/g, `Accept Slot: ${acceptLink}`);
       } else if (selectedEmailTemplateType === "Admission Qualification Notice" || selectedEmailTemplateType === "Letter of Reconsideration") {
         const baseUrl = import.meta.env.VITE_APPLICANT_URL || import.meta.env.VITE_FRONTEND_URL || window.location.origin;
-        const acceptLink = `${baseUrl}/accept-offer?id=${app.rawId || app._id}`;
+        const trackingRef = app.tracking_slug || app.rawId || app._id;
+        const acceptLink = `${baseUrl}/accept-offer?slug=${trackingRef}`;
         const buttonHtml = `
           <div style="margin-top: 5px; margin-bottom: 5px;">
             <a href="${acceptLink}" style="display: inline-block; padding: 10px 24px; background-color: #376e35; color: white; text-decoration: none; border-radius: 4px; font-weight: bold; border: 1px solid black;">Accept Slot</a>
@@ -1661,6 +1691,7 @@ Baliwag Polytechnic College`;
 
       await api.put('/admin/settings/email-template', { templates, subject: "LEGACY_SUBJECT", message: "LEGACY_MESSAGE" });
       toast.success(`${selectedEmailTemplateType} template saved successfully!`);
+      setIsEmailModalOpen(false);
     } catch (err) {
       toast.error("Failed to save template.");
     }
@@ -1701,6 +1732,7 @@ Baliwag Polytechnic College`;
 
         let importMatchCount = 0;
         let newImportCount = 0;
+        let skippedUninterviewedCount = 0;
 
         // Fetch ALL submitted applicants from the API (not just interviewed ones)
         // so that CSV names can match anyone who has submitted, regardless of interview status
@@ -1716,6 +1748,8 @@ Baliwag Polytechnic College`;
         const formatRaw = (app) => {
           const safe = getSafeApplicant(app);
           const fullName = `${app.lastName || ''}, ${app.firstName || ''}${app.middleName ? ' ' + app.middleName : ''}`.trim().toUpperCase();
+          const hasInterview = isApplicantInterviewed(app);
+
           return {
             ...safe,
             rawId: app._id || app.id,
@@ -1723,19 +1757,22 @@ Baliwag Polytechnic College`;
             name: (app.name || fullName).toUpperCase(),
             type: app.type || app.applicantType || "N/A",
             location: app.location || app.presentCity?.toUpperCase() || "N/A",
-            interviewRemarks: app.interviewScore !== undefined && app.interviewScore !== null ? "Passed"
+            isInterviewed: hasInterview,
+            interviewStatus: app.interviewStatus || (hasInterview ? "Passed" : "Pending"),
+            interviewRemarks: (app.interviewScore !== undefined && app.interviewScore !== null && Number(app.interviewScore) > 0)
+              ? (Number(app.interviewScore) > 69 ? "Passed" : "Failed")
               : (app.interviewStatus === 'Passed' ? "Passed" : (app.interviewStatus === 'Failed' ? "Failed" : "Pending")),
             bcetRemarks: (app.examScore && app.examScore > 0) ? (app.examScore >= 37.5 ? "Passed" : "Failed")
               : (app.examStatus === "Passed" || app.examStatus === "Failed" ? app.examStatus : "Pending"),
-            admissionRemarks: app.admissionRemarks || app.admissionStatus || app.status || "Pending",
-            admissionStatus: app.admissionStatus || app.status || "Pending",
-            status: app.admissionStatus || app.status || "Pending",
+            admissionRemarks: hasInterview ? (app.admissionRemarks || app.admissionStatus || app.status || "Pending") : "Pending",
+            admissionStatus: hasInterview ? (app.admissionStatus || app.status || "Pending") : "Pending",
+            status: hasInterview ? (app.admissionStatus || app.status || "Pending") : "For Interview",
             slotStatus: app.slotStatus || "Pending",
             isEmailSent: app.isEmailSent || false,
             sentEmails: app.sentEmails || [],
             interviewRatings: app.interviewRatings || {},
             interviewer: app.interviewer || "",
-            interviewScore: app.interviewScore || 0,
+            interviewScore: (app.interviewScore !== undefined && app.interviewScore !== null && Number(app.interviewScore) > 0) ? Number(app.interviewScore) : null,
             examScore: app.examScore || 0,
             bcetRawScore: app.bcetRawScore || null,
             bcetHighestScore: app.bcetHighestScore || null,
@@ -1788,25 +1825,35 @@ Baliwag Polytechnic College`;
           });
 
           if (appIndex !== -1) {
-            importMatchCount++;
-            const existingScore = updatedApplicants[appIndex].examScore;
-            if (!existingScore || existingScore === 0) {
-              newImportCount++;
-            }
             const rawTestScore = parseFloat(rawValue);
             const rawHighestVal = (rawHighest !== null && rawHighest !== undefined && rawHighest !== "") ? parseFloat(rawHighest) : null;
-            updatedApplicants[appIndex] = {
-              ...updatedApplicants[appIndex],
-              examScore: numericScore,
-              bcetRawScore: !isNaN(rawTestScore) ? rawTestScore : null,
-              bcetHighestScore: (rawHighestVal !== null && !isNaN(rawHighestVal) && rawHighestVal > 0) ? rawHighestVal : null,
-              bcetRemarks: numericScore >= 37.5 ? "Passed" : "Failed",
-            };
+            const isInterviewed = isApplicantInterviewed(updatedApplicants[appIndex]);
+
+            if (isInterviewed) {
+              importMatchCount++;
+              const existingScore = updatedApplicants[appIndex].examScore;
+              if (!existingScore || existingScore === 0) {
+                newImportCount++;
+              }
+              updatedApplicants[appIndex] = {
+                ...updatedApplicants[appIndex],
+                examScore: numericScore,
+                bcetRawScore: !isNaN(rawTestScore) ? rawTestScore : null,
+                bcetHighestScore: (rawHighestVal !== null && !isNaN(rawHighestVal) && rawHighestVal > 0) ? rawHighestVal : null,
+                bcetRemarks: numericScore >= 37.5 ? "Passed" : "Failed",
+                matchedInCsv: true
+              };
+            } else {
+              // Un-interviewed applicant: skip. Nothing is stored or saved for them; they stay in Applications.
+              skippedUninterviewedCount++;
+            }
           }
         }
 
         if (importMatchCount === 0) {
-          toast.warning("No applicants matched the names in the Excel file.");
+          toast.warning(skippedUninterviewedCount > 0
+            ? "Matched applicants have not completed their interview yet. Their BCET scores were not saved."
+            : "No applicants matched the names in the Excel file.");
           setLoading(false);
           return;
         }
@@ -1823,10 +1870,10 @@ Baliwag Polytechnic College`;
           const parsedLimit = parseInt(course.limit) || 0;
           const limit = parsedLimit > 0 ? parsedLimit : Infinity;
 
-          // Find all applicants for this program who have a BCET score from the CSV import
+          // Find all interviewed applicants for this program who have a BCET score from the CSV import
           const programApps = updatedApplicants.filter(a => {
             const activeAbbr = getCourseAbbreviation(a.reconsiderationProgram || (a.isRejectedFirstChoice ? a.profile?.appDetails?.secondChoice : a.profile?.appDetails?.firstChoice), coursesList);
-            return activeAbbr === abbr && a.bcetRemarks && a.bcetRemarks !== "Pending";
+            return activeAbbr === abbr && isApplicantInterviewed(a) && a.bcetRemarks && a.bcetRemarks !== "Pending";
           });
 
           // Confirmed/admitted AND forfeited applicants hold seats.
@@ -1898,6 +1945,10 @@ Baliwag Polytechnic College`;
           passedIdsToEmail.push(...programPassedIds);
         });
 
+        // Applicants matched in the CSV who have NOT completed their interview are skipped:
+        // no exam fields are saved or sent to the database for them. Their scores are only
+        // saved when the admin runs the BCET import again after they reach Pre-Admission.
+
         // Dedup updatesToPush to only get the latest for each rawId
         const uniqueUpdates = Array.from(new Map(updatesToPush.map(u => [u.rawId, u])).values());
 
@@ -1945,15 +1996,26 @@ Baliwag Polytechnic College`;
       if (uniqueUpdates.length > 0) {
         for (const update of uniqueUpdates) {
           try {
-            await api.put(`/admin/applicant/${update.rawId}/status`, { status: update.status, examScore: update.examScore, bcetRawScore: update.bcetRawScore, bcetHighestScore: update.bcetHighestScore })
-              .catch(() => api.patch(`/admin/applicant/${update.rawId}/status`, { status: update.status, examScore: update.examScore, bcetRawScore: update.bcetRawScore, bcetHighestScore: update.bcetHighestScore }));
+            await api.put(`/admin/applicant/${update.rawId}/status`, {
+              status: update.status,
+              examScore: update.examScore,
+              bcetRawScore: update.bcetRawScore,
+              bcetHighestScore: update.bcetHighestScore
+            })
+              .catch(() => api.patch(`/admin/applicant/${update.rawId}/status`, {
+                status: update.status,
+                examScore: update.examScore,
+                bcetRawScore: update.bcetRawScore,
+                bcetHighestScore: update.bcetHighestScore
+              }));
           } catch (dbErr) {
             console.error(`Failed to update DB for applicant ${update.rawId}:`, dbErr);
           }
         }
       }
 
-      setApplicants(updatedApplicants);
+      setApplicants(updatedApplicants.filter(a => isApplicantInterviewed(a)));
+      fetchApplicants();
       toast.success(`Import successful! Evaluated and saved ${uniqueUpdates.length} applicants.`);
       return true;
     } catch (err) {
@@ -2347,7 +2409,9 @@ Baliwag Polytechnic College`;
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "AdmissionResults");
-    XLSX.writeFile(wb, `Applicant Details ${activeYear}.xlsx`);
+    const excelBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([excelBuffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8" });
+    saveAs(blob, `Applicant Details ${activeYear}.xlsx`);
     setIsExportMenuOpen(false);
   };
 
@@ -2584,30 +2648,30 @@ Baliwag Polytechnic College`;
                     <p style="font-weight: bold; margin-bottom: 3px;">Documents Submitted: (Please submit your documents inside <span style="text-decoration: underline;">Long Brown Envelope</span>.)</p>
                     <div style="display: flex; justify-content: space-between;">
                         ${(() => {
-                            const reqs = portalSettings?.applicantRequirements || [];
-                            
-                            const filterReqs = (types) => reqs.filter(r => 
-                                !r.condition && 
-                                (!r.targetApplicant || r.targetApplicant.length === 0 || r.targetApplicant.some(t => types.includes(t)))
-                            );
+          const reqs = portalSettings?.applicantRequirements || [];
 
-                            const freshmenReqs = filterReqs(["SHS Graduate", "High School (Old Curriculum)"]);
-                            const transfereeReqs = filterReqs(["Transferee"]);
-                            const alsReqs = filterReqs(["ALS"]);
+          const filterReqs = (types) => reqs.filter(r =>
+            !r.condition &&
+            (!r.targetApplicant || r.targetApplicant.length === 0 || r.targetApplicant.some(t => types.includes(t)))
+          );
 
-                            const renderDocList = (title, docList) => `
+          const freshmenReqs = filterReqs(["SHS Graduate", "High School (Old Curriculum)"]);
+          const transfereeReqs = filterReqs(["Transferee"]);
+          const alsReqs = filterReqs(["ALS"]);
+
+          const renderDocList = (title, docList) => `
                                 <div style="width: 32%;">
                                     <div style="text-align: center; font-weight: bold; margin-bottom: 5px;">${title}</div>
                                     ${docList.map(r => `<div style="margin-bottom: 3px;"><span style="display:inline-block; width:10px; height:10px; border:1px solid #000; margin-right:4px; margin-bottom:-1px;"></span> ${r.documentName}</div>`).join('')}
                                 </div>
                             `;
 
-                            return `
+          return `
                                 ${renderDocList("Freshmen", freshmenReqs)}
                                 ${renderDocList("Transferees", transfereeReqs)}
                                 ${renderDocList("ALS", alsReqs)}
                             `;
-                        })()}
+        })()}
                     </div>
                 </div>
                     </div>
@@ -2695,10 +2759,6 @@ Baliwag Polytechnic College`;
     setIsExportMenuOpen(false);
   };
 
-  const getColSpan = () => {
-    return 8;
-  };
-
   const is2ndSemesterActive = activeYear ? activeYear.toLowerCase().includes('2nd semester') : false;
 
   if (loading && applicants.length === 0) {
@@ -2706,7 +2766,7 @@ Baliwag Polytechnic College`;
   }
 
   return (
-    <div className={`h-screen w-full bg-gray-50 font-sans overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${false ? 'ml-2' : 'ml-2'
+    <div className={`h-screen w-full bg-gray-50 font-sans overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${isSidebarOpen ? 'ml-2' : 'ml-2'
       }`}>
 
       <main className="flex-1 flex flex-col px-6 py-4 w-full h-full relative">
@@ -2761,6 +2821,14 @@ Baliwag Polytechnic College`;
                       <option value="Passed">Passed</option>
                       <option value="Failed">Failed</option>
                       <option value="Waitlisted">Waitlisted</option>
+                    </select>
+
+                    <label className="block text-xs font-semibold mb-1 uppercase tracking-tight">Applicant Type</label>
+                    <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-full mb-4 p-2 border rounded text-[12px] outline-none">
+                      <option value="">All Types</option>
+                      <option value="SHS GRADUATE">Senior High School Graduate</option>
+                      <option value="TRANSFEREE">Transferee</option>
+                      <option value="ALS">ALS</option>
                     </select>
 
                     <label className="block text-xs font-semibold mb-1 uppercase tracking-tight">Sort By</label>
@@ -3019,8 +3087,8 @@ Baliwag Polytechnic College`;
 
       {/* --- CONFIRMATION MODAL --- */}
       {isConfirmModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center pt-6">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsConfirmModalOpen(false)}></div>
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center pt-6">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsConfirmModalOpen(false)}></div>
           <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-md z-10 flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="flex items-center justify-between bg-white border-b border-gray-200 px-6 py-4 shrink-0">
               <h3 className="text-gray-800 font-bold uppercase tracking-wide text-[16px]">Confirm Action</h3>
@@ -3050,8 +3118,8 @@ Baliwag Polytechnic College`;
       {/* --- EMAIL MODAL --- */}
       {/* --- MESSAGE APPLICANT MODAL --- */}
       {isMessageModalOpen && selectedApplicant && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center pt-6">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsMessageModalOpen(false)}></div>
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center pt-6">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsMessageModalOpen(false)}></div>
           <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-lg z-10 flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="flex items-center justify-between bg-white border-b border-gray-200 px-6 py-4 shrink-0">
               <h3 className="text-gray-800 font-bold uppercase tracking-wide text-[15px]">Message Applicant</h3>
@@ -3114,8 +3182,8 @@ Baliwag Polytechnic College`;
 
       {/* --- SEND BULK EMAIL MODAL --- */}
       {isEmailModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center pt-6">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsEmailModalOpen(false)}></div>
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center pt-6">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsEmailModalOpen(false)}></div>
           <div className="relative bg-white rounded-lg shadow-2xl w-full max-w-2xl z-10 flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
             <div className="flex items-center justify-between bg-white border-b border-gray-200 px-6 py-4 shrink-0">
               <h3 className="text-gray-800 font-bold uppercase tracking-wide text-[16px]">
@@ -3160,7 +3228,7 @@ Baliwag Polytechnic College`;
                     <span className="text-[10px]">▼</span>
                   </summary>
                   <div className="absolute top-[100%] left-0 w-full bg-white border border-gray-300 rounded shadow-lg max-h-40 overflow-y-auto z-50 mt-1">
-                    <div 
+                    <div
                       className="px-3 py-2 bg-gray-50 text-[12px] font-semibold border-b border-gray-100 cursor-pointer hover:bg-gray-100"
                       onClick={() => setSelectedDropdownTarget('all')}
                     >
@@ -3207,8 +3275,8 @@ Baliwag Polytechnic College`;
 
       {/* --- MISSING PLACEHOLDERS MODAL --- */}
       {missingPlaceholdersModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setMissingPlaceholdersModal(null)}></div>
+        <div className="fixed inset-0 z-[1250] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMissingPlaceholdersModal(null)}></div>
           <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 relative z-10 border-t-4 border-yellow-500">
             <button className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition" onClick={() => setMissingPlaceholdersModal(null)}>&times;</button>
             <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2"><FaExclamationTriangle className="text-yellow-500" /> Missing Placeholders</h3>
@@ -3231,8 +3299,8 @@ Baliwag Polytechnic College`;
 
       {/* --- CAPACITY WARNING MODAL --- */}
       {capacityWarningModal && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setCapacityWarningModal(null)}></div>
+        <div className="fixed inset-0 z-[1250] flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setCapacityWarningModal(null)}></div>
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 relative z-10">
             <button className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition" onClick={() => setCapacityWarningModal(null)}>&times;</button>
             <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -3265,8 +3333,8 @@ Baliwag Polytechnic College`;
 
       {/* --- VIEW APPLICANT MODAL --- */}
       {isModalOpen && selectedApplicant && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-6">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}></div>
+        <div className="fixed inset-0 z-[1000] flex items-start justify-center pt-6">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}></div>
           <div className="relative bg-white rounded-2xl shadow-2xl w-11/12 max-w-[1400px] z-10 flex flex-col max-h-[95vh] overflow-hidden">
 
             <div className="flex items-center justify-between bg-white border-b border-gray-200 px-6 py-4 shrink-0">
@@ -3533,7 +3601,7 @@ Baliwag Polytechnic College`;
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {selectedApplicant.profile.documents.map((doc, idx) => {
                       const isImage = ['png', 'jpg', 'jpeg'].includes(doc.type.toLowerCase());
-                      
+
                       const cleanDocName = (doc.name || "Document").replace(/\.[^/.]+$/, "");
 
                       return (
@@ -3649,7 +3717,7 @@ Baliwag Polytechnic College`;
 
       {/* --- PREVIEW DOCUMENT MODAL --- */}
       {previewDoc && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="bg-white w-full max-w-5xl h-[85vh] rounded-2xl flex flex-col overflow-hidden shadow-2xl relative">
             <div className="bg-white text-[#376e35] px-6 py-4 flex justify-between items-center shrink-0 z-10 relative shadow-md">
               <div className="flex items-center gap-4">
@@ -3731,8 +3799,8 @@ Baliwag Polytechnic College`;
         const currentRemarks = getRemarks(interviewTotal.toFixed(2));
 
         return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center pt-6">
-            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsInterviewModalOpen(false)}></div>
+          <div className="fixed inset-0 z-[1200] flex items-center justify-center pt-6">
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsInterviewModalOpen(false)}></div>
             <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[1100px] h-[95vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
 
               <div className="flex items-center justify-between bg-white border-b border-gray-200 px-6 py-4 shrink-0">
@@ -3868,7 +3936,7 @@ Baliwag Polytechnic College`;
       })()}
 
       {/* --- HIDDEN PRINT CONTAINER --- */}
-      <div style={{ display: "none" }}>
+      <div style={{ position: "fixed", opacity: 0, pointerEvents: "none", left: "-99999px", top: "-99999px" }}>
         <div ref={printFormRef} dangerouslySetInnerHTML={{ __html: printContent }} />
       </div>
 
