@@ -17,6 +17,10 @@ import EnrollmentStudents from './pages/Enrollment/StudentList';
 import EnrollmentCurriculum from './pages/Enrollment/Curriculum';
 import EnrollmentSections from './pages/Enrollment/SectionList';
 import EnrollmentSchedules from './pages/Enrollment/Schedules';
+import GradingAccounts from './pages/Grading/pages/ManageAccounts';
+import GradingViewGrade from './pages/Grading/pages/ViewGrade';
+import GradingComponents from './pages/Grading/pages/GradeComponents';
+import GradingDeadlines from './pages/Grading/pages/DeadlineAndReminders.jsx';
 import { Toaster } from 'react-hot-toast';
 
 export default function App() {
@@ -54,8 +58,10 @@ export default function App() {
       case 'pre-enrollment-schedules': return 'Enrollment - Schedules';
       case 'pre-advising': return 'Pre-Advising & Scheduling';
       case 'evaluation': return 'Faculty & Course Evaluation';
-      case 'grading': return 'Grading & Marks System';
-
+      case 'grading-accounts': return 'Grading - Manage Accounts';
+      case 'grading-view-grade': return 'Grading - View Grade';
+      case 'grading-components': return 'Grading - Grade Components';
+      case 'grading-deadlines': return 'Grading - Deadlines & Reminders';
       case 'broadcast': return 'Student Portal - Broadcast & Announcements';
       case 'students-request': return 'Student Portal - Students Request';
       default: return 'Admin Portal';
@@ -90,9 +96,13 @@ export default function App() {
           {activeTab === 'pre-admission-post-admission' && <ToastProvider><PostAdmission navigateToTab={navigateToTab} /></ToastProvider>}
           {activeTab === 'pre-admission-settings' && <ToastProvider><Settings navigateToTab={navigateToTab} /></ToastProvider>}
           {activeTab === 'evaluation' && <EvaluationAdmin />}
+          {activeTab === 'grading-accounts' && <GradingAccounts />}
+          {activeTab === 'grading-view-grade' && <GradingViewGrade />}
+          {activeTab === 'grading-components' && <GradingComponents />}
+          {activeTab === 'grading-deadlines' && <GradingDeadlines />}
 
           {/* Removed 'students-request' and 'evaluation' from this fallback list below */}
-          {['pre-advising', 'grading'].includes(activeTab) && (
+          {['pre-advising'].includes(activeTab) && (
             <div className="placeholder-view">
               Module for <strong>{getTabTitle()}</strong> is ready to be built next.
             </div>

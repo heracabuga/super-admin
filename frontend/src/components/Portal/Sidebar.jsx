@@ -6,11 +6,11 @@ export function Sidebar({ activeTab, setActiveTab, onLogout }) {
   const [isPreAdmissionExpanded, setIsPreAdmissionExpanded] = useState(false);
   const [isPreEnrollmentExpanded, setIsPreEnrollmentExpanded] = useState(false);
   const [isPortalExpanded, setIsPortalExpanded] = useState(false);
+  const [isGradingExpanded, setIsGradingExpanded] = useState(false);
 
   const mainMenuItems = [
     { id: 'pre-advising', label: 'Pre-Advising' },
     { id: 'evaluation', label: 'Evaluation System' },
-    { id: 'grading', label: 'Grading System' },
   ];
 
   const preEnrollmentMenuItems = [
@@ -32,6 +32,12 @@ export function Sidebar({ activeTab, setActiveTab, onLogout }) {
   const portalMenuItems = [
     { id: 'broadcast', label: 'Broadcast' },
     { id: 'students-request', label: 'Students Request' },
+  ];
+  const gradingMenuItems = [
+    { id: 'grading-accounts', label: 'Manage Accounts' },
+    { id: 'grading-view-grade', label: 'View Grade' },
+    { id: 'grading-components', label: 'Grade Components' },
+    { id: 'grading-deadlines', label: 'Deadlines & Reminders' },
   ];
 
   return (
@@ -106,6 +112,31 @@ export function Sidebar({ activeTab, setActiveTab, onLogout }) {
             <span>{item.label}</span>
           </button>
         ))}
+
+                {/* Grading System Dropdown */}
+        <div className="nav-group">
+          <button
+            onClick={() => setIsGradingExpanded(!isGradingExpanded)}
+            className={`nav-item nav-item-dropdown ${activeTab.startsWith('grading-') ? 'active' : ''}`}
+          >
+            <span>Grading System</span>
+            <span className={`dropdown-arrow ${isGradingExpanded ? 'open' : ''}`}>▼</span>
+          </button>
+
+          {isGradingExpanded && (
+            <div className="submenu">
+              {gradingMenuItems.map((subItem) => (
+                <button
+                  key={subItem.id}
+                  onClick={() => setActiveTab(subItem.id)}
+                  className={`submenu-item ${activeTab === subItem.id ? 'active' : ''}`}
+                >
+                  {subItem.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Student Portal Dropdown */}
         <div className="nav-group">
