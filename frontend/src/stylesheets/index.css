@@ -98,3 +98,31 @@ a {
   background: #1f5a3c;
   color: white;
 }
+
+
+/* ==========================================
+   PRE-ADVISING STYLES (migrated from pre-advising project)
+   ========================================== */
+@font-face {
+  font-family: "roboto";
+  src: url("../pages/Pre-Advising/assets/font/Roboto-Regular.ttf") format("truetype");
+}
+
+/* Soften the grid borders */
+.custom-calendar-grid .rbc-time-view { border: none; }
+.custom-calendar-grid .rbc-time-header { border-bottom: 2px solid #f3f4f6; }
+.custom-calendar-grid .rbc-header { border: none; padding-bottom: 10px; font-weight: 700; color: #374151; }
+
+/* DRAG AND DROP GHOST STYLING */
+/* The original card left behind while dragging (The Ghost) */
+.rbc-addons-dnd-dragged-event {
+  opacity: 0.2 !important;
+  filter: grayscale(50%);
+}
+
+/* The floating card attached to your mouse */
+.rbc-addons-dnd-drag-preview {
+  opacity: 1 !important;
+  box-shadow: 0 10px 25px -5px rgb(0 0 0 / 0.4) !important;
+  cursor: grabbing !important;
+}

@@ -26,6 +26,7 @@ from schemas.global_schemas import AnnouncementSchema, AnnouncementUpdateSchema
 from routes.pre_admission import admin, applicant, pdf, rubric
 from utils.cleanup_cron import start_cron
 
+
 # Safely import optional routers
 try:
     from routes import auth_routes
@@ -44,6 +45,8 @@ from routes.enrollment import students as enrollment_students
 from routes.enrollment import sections as enrollment_sections
 from routes.enrollment import curriculum as enrollment_curriculum
 from routes.enrollment import schedules as enrollment_schedules
+
+from routes.pre_advising.router import router as pre_advising_router
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -244,3 +247,4 @@ app.include_router(notification.router)
 app.include_router(pdf.router)
 app.include_router(record_admin.router)
 app.include_router(grading_router)
+app.include_router(pre_advising_router)

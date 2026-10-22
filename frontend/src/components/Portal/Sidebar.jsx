@@ -7,10 +7,18 @@ export function Sidebar({ activeTab, setActiveTab, onLogout }) {
   const [isPreEnrollmentExpanded, setIsPreEnrollmentExpanded] = useState(false);
   const [isPortalExpanded, setIsPortalExpanded] = useState(false);
   const [isGradingExpanded, setIsGradingExpanded] = useState(false);
+  const [isPreAdvisingExpanded, setIsPreAdvisingExpanded] = useState(false);
 
   const mainMenuItems = [
-    { id: 'pre-advising', label: 'Pre-Advising' },
     { id: 'evaluation', label: 'Evaluation System' },
+  ];
+
+  const preAdvisingMenuItems = [
+    { id: 'pre-advising-dashboard', label: 'Dashboard' },
+    { id: 'pre-advising-roster', label: 'Student Roster' },
+    { id: 'pre-advising-advising', label: 'Pre-Advising' },
+    { id: 'pre-advising-schedule', label: 'Schedule' },
+    { id: 'pre-advising-report', label: 'Report' },
   ];
 
   const preEnrollmentMenuItems = [
@@ -90,6 +98,31 @@ export function Sidebar({ activeTab, setActiveTab, onLogout }) {
           {isPreEnrollmentExpanded && (
             <div className="submenu">
               {preEnrollmentMenuItems.map((subItem) => (
+                <button
+                  key={subItem.id}
+                  onClick={() => setActiveTab(subItem.id)}
+                  className={`submenu-item ${activeTab === subItem.id ? 'active' : ''}`}
+                >
+                  {subItem.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Pre-Advising Dropdown */}
+        <div className="nav-group">
+          <button
+            onClick={() => setIsPreAdvisingExpanded(!isPreAdvisingExpanded)}
+            className={`nav-item nav-item-dropdown ${activeTab.startsWith('pre-advising-') ? 'active' : ''}`}
+          >
+            <span>Pre-Advising</span>
+            <span className={`dropdown-arrow ${isPreAdvisingExpanded ? 'open' : ''}`}>▼</span>
+          </button>
+
+          {isPreAdvisingExpanded && (
+            <div className="submenu">
+              {preAdvisingMenuItems.map((subItem) => (
                 <button
                   key={subItem.id}
                   onClick={() => setActiveTab(subItem.id)}
