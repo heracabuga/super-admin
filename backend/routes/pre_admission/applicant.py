@@ -9,7 +9,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from routes.pre_admission.admin import fix_ids
 from utils.pre_admission.pdf_generator import generate_application_form_pdf
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Body, Request
@@ -236,7 +236,16 @@ async def update_profile(
         update_data["applicantType"] = parsed_data.get("applicantType")
         update_data["schoolYear"] = settings.get("schoolYear") if settings else parsed_data.get("schoolYear")
         update_data["firstChoice"] = parsed_data.get("firstChoice")
-        update_data["secondChoice"] = parsed_data.get("secondChoice")
+        second_choice = parsed_data.get("secondChoice")
+        if second_choice:
+            all_courses = settings.get("courses", []) if settings else []
+            is_second_board = any(
+                c.get("name") == second_choice and c.get("hasBoardExam", False)
+                for c in all_courses
+            )
+            if is_second_board:
+                raise HTTPException(status_code=400, detail="Board exam programs can only be selected as your 1st Choice.")
+        update_data["secondChoice"] = second_choice
         update_data["birthDate"] = parsed_data.get("birthDate")
         update_data["civilStatus"] = parsed_data.get("civilStatus")
         
@@ -389,13 +398,36 @@ async def final_submit(
             {"$set": {"applicantId": applicant_id_str}}
         )
 
+    requires_interview = True
+    first_choice = applicant.get("firstChoice")
+    if settings and "courses" in settings and first_choice:
+        course = next((c for c in settings["courses"] if c.get("name") == first_choice), None)
+        if course:
+            inst_code = course.get("instituteCode") or course.get("institute")
+            if inst_code and "institutes" in settings:
+                inst = next((i for i in settings["institutes"] if i.get("code") == inst_code or i.get("name") == inst_code or i.get("abbreviation") == inst_code or str(i.get("_id", "")) == str(inst_code)), None)
+                if inst and (inst.get("requiresInterview") is False or inst.get("hasInterview") is False):
+                    requires_interview = False
+
     # Finalize Submission
     update_data = {
         "isSubmitted": True,
         "admissionStatus": "Pending",
-        "interviewStatus": "Pending",
         "examStatus": "Pending"
     }
+    if not requires_interview:
+        update_data["interviewScore"] = 50
+        update_data["interviewStatus"] = "Passed"
+        update_data["interviewRemarks"] = "Auto-credited (No Interview)"
+        update_data["isInterviewWaived"] = True
+        update_data["isInterviewed"] = False
+        update_data["status"] = "For Document Submission"
+    else:
+        update_data["interviewStatus"] = "Pending"
+        update_data["isInterviewWaived"] = False
+        update_data["isInterviewed"] = False
+        update_data["status"] = "For Interview"
+
     if interviewDate:
         update_data["interviewDate"] = interviewDate
 
@@ -668,6 +700,33 @@ async def admission_decision(payload: AdmissionDecisionPayload = Body(...), user
     update_fields = {"slotStatus": "Admitted" if decision == "Accepted" else "Forfeited"}
 
     if decision == "Accepted":
+        # Check hardcopy / slot acceptance deadline
+        submission_deadline = applicant.get("hardcopySubmissionDeadline") or applicant.get("slotAcceptanceDeadline")
+        if not submission_deadline:
+            sys_settings = settings_collection.find_one({})
+            if sys_settings:
+                submission_deadline = sys_settings.get("slotAcceptanceDeadline")
+        if submission_deadline:
+            try:
+                PH_TZ = timezone(timedelta(hours=8))
+                deadline_str = str(submission_deadline).strip()
+                if len(deadline_str) == 10:
+                    deadline_dt = datetime.strptime(deadline_str, "%Y-%m-%d").replace(tzinfo=PH_TZ) + timedelta(days=1, seconds=-1)
+                else:
+                    deadline_dt = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+                    if deadline_dt.tzinfo is None:
+                        deadline_dt = deadline_dt.replace(tzinfo=PH_TZ)
+
+                if datetime.now(PH_TZ) > deadline_dt:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The deadline to submit physical requirements and secure this slot has expired."
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                print(f"Error checking submission deadline: {e}")
+
         update_fields["admissionStatus"] = "Admitted"
         update_fields["admissionRemarks"] = "Accepted"
         current_app_id = applicant.get("applicantId", "")
@@ -765,6 +824,33 @@ async def accept_offer_public(request: Request, payload: AcceptOfferPayload = Bo
     )
     if not eligible:
         raise HTTPException(status_code=400, detail="This slot is not available for acceptance at this time.")
+
+    # Check hardcopy / slot acceptance deadline
+    submission_deadline = applicant.get("hardcopySubmissionDeadline") or applicant.get("slotAcceptanceDeadline")
+    if not submission_deadline:
+        sys_settings = settings_collection.find_one({})
+        if sys_settings:
+            submission_deadline = sys_settings.get("slotAcceptanceDeadline")
+    if submission_deadline:
+        try:
+            PH_TZ = timezone(timedelta(hours=8))
+            deadline_str = str(submission_deadline).strip()
+            if len(deadline_str) == 10:
+                deadline_dt = datetime.strptime(deadline_str, "%Y-%m-%d").replace(tzinfo=PH_TZ) + timedelta(days=1, seconds=-1)
+            else:
+                deadline_dt = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+                if deadline_dt.tzinfo is None:
+                    deadline_dt = deadline_dt.replace(tzinfo=PH_TZ)
+
+            if datetime.now(PH_TZ) > deadline_dt:
+                raise HTTPException(
+                    status_code=400,
+                    detail="The deadline to submit physical requirements and secure this slot has expired."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"Error checking submission deadline: {e}")
 
     update_fields = {
         "slotStatus": "Admitted",

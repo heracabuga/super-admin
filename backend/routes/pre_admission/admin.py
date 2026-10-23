@@ -2,7 +2,7 @@ import os
 import hashlib
 import secrets
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from utils.pre_admission.pdf_generator import generate_application_form_pdf
 from fastapi import APIRouter, Depends, HTTPException, Response, Body, Request, UploadFile, File
 from bson import ObjectId
@@ -205,11 +205,28 @@ async def get_system_settings(request: Request, user: dict = Depends(admin_only)
         settings_collection.insert_one(default_settings)
         settings = default_settings
     settings, needs_save = evaluate_admission_status(settings)
+
+    if settings.get("applicationDeadline") and not settings.get("slotAcceptanceDeadline"):
+        try:
+            import calendar
+            app_deadline_str = str(settings["applicationDeadline"])
+            base_dt = datetime.fromisoformat(app_deadline_str.replace("Z", "+00:00"))
+            year = base_dt.year + (base_dt.month + 2 - 1) // 12
+            month = (base_dt.month + 2 - 1) % 12 + 1
+            max_days = calendar.monthrange(year, month)[1]
+            day = min(base_dt.day, max_days)
+            slot_dt = base_dt.replace(year=year, month=month, day=day)
+            settings["slotAcceptanceDeadline"] = slot_dt.isoformat()
+            needs_save = True
+        except Exception:
+            pass
+
     if needs_save:
         settings_collection.update_one({"institute": "Admission"}, {"$set": {
             "admissionStatus": settings.get("admissionStatus"),
             "admissionOpen": settings.get("admissionOpen"),
-            "autoState": settings.get("autoState")
+            "autoState": settings.get("autoState"),
+            "slotAcceptanceDeadline": settings.get("slotAcceptanceDeadline")
         }})
         
     settings["_id"] = str(settings["_id"])
@@ -498,8 +515,112 @@ async def delete_institute(id: str, user: dict = Depends(admin_only)):
     return {"msg": "Institute deleted"}
 
 # ==========================================
-# APPLICANT MANAGEMENT
+# DASHBOARD METRICS & APPLICANT MANAGEMENT
 # ==========================================
+
+@router.get("/dashboard/stats")
+@router.get("/dashboard")
+async def get_dashboard_stats(request: Request, schoolYear: str = None, archive: str = "false", user: dict = Depends(admin_only)):
+    archive_year = request.headers.get("archiveviewyear")
+    if archive_year:
+        target_collection = archived_applicant_collection
+        schoolYear = archive_year
+        settings = archived_settings_collection.find_one({"institute": "Admission", "schoolYear": archive_year}) or {}
+    else:
+        target_collection = archived_applicant_collection if archive.lower() == "true" else applicant_collection
+        settings = settings_collection.find_one({"institute": "Admission"}) or {}
+
+    query = {
+        "$or": [
+            {"isSubmitted": True},
+            {"isUnlocked": True},
+            {"status": "For Interview"},
+            {"admissionStatus": "For Interview"}
+        ]
+    }
+    if schoolYear:
+        query["schoolYear"] = schoolYear
+
+    all_applicants = list(target_collection.find(query).sort("createdAt", -1))
+    
+    admin_user = user_collection.find_one({"_id": ObjectId(user["id"])})
+    user_role = (admin_user.get("role", "Admin") if admin_user else "Admin").replace(" ", "").lower()
+    raw_user_inst = admin_user.get("institute", "Admission") if admin_user else "Admission"
+    
+    all_courses = settings.get("courses", [])
+    all_institutes = settings.get("institutes", [])
+    
+    def get_inst_abbr(inst_val):
+        if not inst_val: return "N/A"
+        str_val = str(inst_val).strip().lower()
+        for i in all_institutes:
+            if str(i.get("_id", "")) == str_val or i.get("name", "").lower() == str_val or i.get("abbreviation", "").lower() == str_val:
+                return i.get("abbreviation")
+        return str_val
+
+    user_inst = get_inst_abbr(raw_user_inst)
+    admin_allowed_courses = []
+    if user_role != "superadmin" and user_inst.upper() not in ["ADMISSION", "ALL"]:
+        clean_inst = user_inst.strip().lower()
+        for c in all_courses:
+            if get_inst_abbr(c.get("institute", "")).lower() == clean_inst:
+                admin_allowed_courses.append({
+                    "name": c.get("name", "").lower(),
+                    "abbr": c.get("abbreviation", "").lower()
+                })
+
+    filtered_applicants = []
+    for app in all_applicants:
+        raw_first = app.get("firstChoice", "").strip().lower()
+        raw_second = app.get("secondChoice", "").strip().lower()
+        active_choice = raw_second if app.get("isRejectedFirstChoice") else raw_first
+        if user_role != "superadmin" and user_inst.upper() not in ["ADMISSION", "ALL"]:
+            matched = False
+            for ac in admin_allowed_courses:
+                c_name = ac["name"]
+                c_abbr = ac["abbr"]
+                if (c_name and (c_name in active_choice or active_choice in c_name)) or (c_abbr and (c_abbr == active_choice or f"- {c_abbr}" in active_choice)):
+                    matched = True
+                    break
+            if not matched:
+                continue
+        filtered_applicants.append(app)
+
+    total_count = len(filtered_applicants)
+    
+    # Admitted students: slotStatus in Admitted/Accepted, or status == Enrolled, or admissionStatus in Admitted/Confirmed/Advising Completed
+    admitted_list = [
+        app for app in filtered_applicants
+        if str(app.get("slotStatus", "")).strip().capitalize() in ["Admitted", "Accepted"]
+        or str(app.get("status", "")).strip().capitalize() in ["Enrolled", "Admitted"]
+        or str(app.get("admissionStatus", "")).strip().capitalize() in ["Admitted", "Confirmed", "Advising completed"]
+    ]
+    admitted_count = len(admitted_list)
+
+    # For Interview applicants
+    for_interview_list = []
+    for app in filtered_applicants:
+        app_status = str(app.get("status", "")).strip()
+        app_adm_status = str(app.get("admissionStatus", "")).strip()
+        app_is_interviewed = bool(
+            app.get("isInterviewed") or
+            app.get("interviewStatus") in ["Passed", "Failed"] or
+            (app.get("interviewScore") is not None and float(app.get("interviewScore", 0)) > 0)
+        )
+        if app_status == "For Interview" or app_adm_status == "For Interview":
+            for_interview_list.append(app)
+        elif not app_is_interviewed and app_status not in ["Passed", "Failed", "Enrolled", "Admitted"] and app_adm_status not in ["Passed", "Failed", "Admitted", "Confirmed", "Advising Completed"]:
+            for_interview_list.append(app)
+            
+    for_interview_count = len(for_interview_list)
+
+    return fix_ids({
+        "totalApplicants": total_count,
+        "admittedCount": admitted_count,
+        "forInterviewCount": for_interview_count,
+        "recentApplicants": for_interview_list[:50],
+        "admittedApplicants": admitted_list
+    })
 
 @router.get("/applicants")
 async def get_all_applicants(request: Request, schoolYear: str = None, archive: str = "false", user: dict = Depends(admin_only)):
@@ -513,7 +634,14 @@ async def get_all_applicants(request: Request, schoolYear: str = None, archive: 
         target_collection = archived_applicant_collection if archive.lower() == "true" else applicant_collection
         settings = settings_collection.find_one({"institute": "Admission"}) or {}
         
-    query = {"$or": [{"isSubmitted": True}, {"isUnlocked": True}]}
+    query = {
+        "$or": [
+            {"isSubmitted": True},
+            {"isUnlocked": True},
+            {"status": "For Interview"},
+            {"admissionStatus": "For Interview"}
+        ]
+    }
     
     if schoolYear:
         query["schoolYear"] = schoolYear
@@ -545,6 +673,18 @@ async def get_all_applicants(request: Request, schoolYear: str = None, archive: 
                     "abbr": c.get("abbreviation", "").lower()
                 })
     
+    deadline_str = settings.get("applicationDeadline")
+    is_deadline_passed = False
+    if deadline_str:
+        try:
+            PH_TZ = timezone(timedelta(hours=8))
+            end_dt = datetime.fromisoformat(str(deadline_str).replace("Z", "+00:00"))
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=PH_TZ)
+            is_deadline_passed = (datetime.now(PH_TZ) >= (end_dt + timedelta(days=1)))
+        except Exception as e:
+            print(f"Error checking applicationDeadline: {e}")
+
     formatted_applicants = []
     for app in target_collection.find(query).sort("createdAt", -1):
         raw_first = app.get("firstChoice", "").strip().lower()
@@ -574,34 +714,89 @@ async def get_all_applicants(request: Request, schoolYear: str = None, archive: 
         last_name = app.get("lastName", "")
         app["name"] = f"{last_name}, {first_name} {middle_name}".strip()
         
-        # Determine if the applicant has completed their interview
-        is_interviewed = bool(
-            app.get("isInterviewed") or
-            app.get("interviewStatus") in ["Passed", "Failed"] or
-            (app.get("interviewScore") is not None and float(app.get("interviewScore", 0)) > 0)
-        )
-        
-        if not is_interviewed:
-            # Un-interviewed applicants must not carry exam fields or qualification results
-            app["examScore"] = None
-            app["bcetRawScore"] = None
-            app["bcetHighestScore"] = None
-            app["isExamined"] = False
-            app["examStatus"] = "Pending"
-            app["admissionStatus"] = "Pending"
-            app["admissionRemarks"] = ""
-            app["status"] = "For Interview"
-        else:
-            app["status"] = app.get("admissionStatus", "Pending")
-            if app["status"] == "For Re-Evaluation":
-                app["status"] = "For Interview"
-        
         effective_course = get_applicant_course(app)
         matched_course = next((c for c in all_courses if (c.get("name", "").lower() == active_choice or c.get("abbreviation", "").lower() == active_choice)), None)
         if not matched_course and " - " in active_choice:
             parts = [p.strip().lower() for p in active_choice.split(" - ") if p.strip()]
             matched_course = next((c for c in all_courses if c.get("name", "").lower() in parts or c.get("abbreviation", "").lower() in parts), None)
 
+        c_inst = str(matched_course.get("institute", "")).strip().lower() if matched_course else ""
+        active_inst = next((i for i in all_institutes if str(i.get("_id", "")).lower() == c_inst or i.get("name", "").lower() == c_inst or i.get("abbreviation", "").lower() == c_inst or i.get("code", "").lower() == c_inst), None)
+        requires_interview = bool(active_inst.get("requiresInterview", True) and active_inst.get("hasInterview", True)) if active_inst else True
+
+        is_waived = bool(app.get("isInterviewWaived") or not requires_interview)
+
+        raw_status = str(app.get("status", "")).strip()
+        raw_adm_status = str(app.get("admissionStatus", "")).strip()
+
+        if raw_status == "For Interview" or raw_adm_status == "For Interview":
+            is_interviewed = False
+            app["isInterviewed"] = False
+            app["interviewStatus"] = "Pending"
+            app["status"] = "For Interview"
+            app["examScore"] = None
+            app["bcetRawScore"] = None
+            app["bcetHighestScore"] = None
+            app["isExamined"] = False
+            app["gwaScore"] = None
+            app["finalScore"] = None
+            app["rank"] = None
+            app["examStatus"] = "Pending"
+            app["admissionStatus"] = "Pending"
+            app["admissionRemarks"] = ""
+        elif is_waived:
+            app["isInterviewWaived"] = True
+            if is_deadline_passed:
+                # Exactly 1 day after deadline: Auto-route to Pre-Admission ranking
+                app["isInterviewed"] = True
+                if app.get("interviewScore") is None or float(app.get("interviewScore", 0)) == 0:
+                    app["interviewScore"] = 50
+                if not app.get("interviewStatus") or app.get("interviewStatus") == "Pending":
+                    app["interviewStatus"] = "Passed"
+                if not app.get("interviewRemarks"):
+                    app["interviewRemarks"] = "Auto-credited (No Interview)"
+                is_interviewed = True
+                app["status"] = app.get("admissionStatus", "Pending")
+            else:
+                # During application: Keep in initial queue
+                app["isInterviewed"] = False
+                app["interviewScore"] = 50
+                app["interviewStatus"] = "Passed"
+                app["interviewRemarks"] = "Auto-credited (No Interview)"
+                app["status"] = "For Document Submission"
+                is_interviewed = False
+        else:
+            is_interviewed = bool(
+                app.get("isInterviewed") or
+                app.get("interviewStatus") in ["Passed", "Failed"] or
+                (app.get("interviewScore") is not None and float(app.get("interviewScore", 0)) > 0)
+            )
+
+            if not is_interviewed:
+                # Un-interviewed applicants must not carry exam fields or qualification results
+                app["examScore"] = None
+                app["bcetRawScore"] = None
+                app["bcetHighestScore"] = None
+                app["isExamined"] = False
+                app["gwaScore"] = None
+                app["finalScore"] = None
+                app["rank"] = None
+                app["examStatus"] = "Pending"
+                app["admissionStatus"] = "Pending"
+                app["admissionRemarks"] = ""
+                app["status"] = "For Interview"
+            else:
+                app["status"] = app.get("status") or app.get("admissionStatus", "Pending")
+                if app["status"] in ["For Re-Evaluation", "Pending"]:
+                    app["status"] = "For Interview"
+                    app["isInterviewed"] = False
+
+        # Ensure slotStatus is preserved and properly formatted
+        slot_status = app.get("slotStatus")
+        if not slot_status and app.get("status") == "Enrolled":
+            slot_status = "Admitted"
+        app["slotStatus"] = slot_status
+        
         app["institute"] = get_inst_abbr(matched_course.get("institute")) if matched_course else "N/A"
         app["course"] = effective_course or "N/A"
         if not app.get("activeProgram"):
@@ -817,14 +1012,20 @@ async def send_bulk_emails(payload: SendBulkEmailsPayload = Body(...), user: dic
             # 2. Safely update database flag and save sent email content
             if app_id:
                 query = {"_id": ObjectId(app_id)} if ObjectId.is_valid(app_id) else {"applicantId": app_id}
+                set_fields = {"isEmailSent": True}
+                hardcopy_deadline = email_data.get("hardcopySubmissionDeadline") or payload.get("hardcopySubmissionDeadline")
+                if hardcopy_deadline:
+                    set_fields["hardcopySubmissionDeadline"] = str(hardcopy_deadline).strip()
                 applicant_collection.update_one(
                     query,
                     {
-                        "$set": {"isEmailSent": True},
+                        "$set": set_fields,
                         "$push": {"sentEmails": {
                             "type": email_type,
                             "subject": subject,
+                            "message": message_body,
                             "body": message_body,
+                            "htmlMessage": html_message,
                             "sentAt": datetime.utcnow()
                         }}
                     }
@@ -1020,6 +1221,10 @@ async def update_status(id: str, payload: UpdateStatusPayload = Body(...), user:
             update_fields["admissionStatus"] = "Pending"
             update_fields["admissionRemarks"] = ""
             update_fields["status"] = "For Interview"
+            update_fields["isInterviewed"] = False
+            update_fields["interviewStatus"] = "Pending"
+            update_fields["interviewScore"] = None
+            update_fields["interviewRatings"] = {}
         else:
             update_fields["admissionStatus"] = status
         db_status = update_fields.get("status", update_fields.get("admissionStatus", status))
@@ -1051,6 +1256,33 @@ async def update_status(id: str, payload: UpdateStatusPayload = Body(...), user:
     target_slot = update_fields.get("slotStatus", "").lower()
     target_adm = update_fields.get("admissionStatus", "").lower()
     if target_slot == "admitted" or target_adm == "admitted":
+        # Strictly enforce slot acceptance deadline
+        submission_deadline = existing_applicant.get("hardcopySubmissionDeadline") or existing_applicant.get("slotAcceptanceDeadline")
+        if not submission_deadline:
+            sys_settings = settings_collection.find_one({})
+            if sys_settings:
+                submission_deadline = sys_settings.get("slotAcceptanceDeadline")
+        if submission_deadline:
+            try:
+                PH_TZ = timezone(timedelta(hours=8))
+                deadline_str = str(submission_deadline).strip()
+                if len(deadline_str) == 10:
+                    deadline_dt = datetime.strptime(deadline_str, "%Y-%m-%d").replace(tzinfo=PH_TZ) + timedelta(days=1, seconds=-1)
+                else:
+                    deadline_dt = datetime.fromisoformat(deadline_str.replace("Z", "+00:00"))
+                    if deadline_dt.tzinfo is None:
+                        deadline_dt = deadline_dt.replace(tzinfo=PH_TZ)
+
+                if datetime.now(PH_TZ) > deadline_dt:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The deadline to submit physical requirements and secure this slot has expired."
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                print(f"Error checking submission deadline: {e}")
+
         if not existing_applicant.get("section"):
             course = get_applicant_course(existing_applicant)
             sy = get_applicant_school_year(existing_applicant)
@@ -1159,27 +1391,46 @@ async def delete_applicant(id: str, user: dict = Depends(admin_only)):
     app_id_str = applicant.get("applicantId") or str(app_oid)
     app_email = applicant.get("email")
     
-    # 1. Delete applicant record
-    applicant_collection.delete_one({"_id": app_oid})
-    
-    # 2. Delete corresponding student login account
-    if app_email:
-        user_collection.delete_many({"$or": [{"email": app_email}, {"username": app_id_str}]})
-    elif app_id_str:
-        user_collection.delete_many({"username": app_id_str})
+    try:
+        # 1. Delete applicant record
+        applicant_collection.delete_one({"_id": app_oid})
         
-    # 3. Clean up associated notifications
-    notification_collection.delete_many({"$or": [{"recipientId": str(app_oid)}, {"recipientId": app_id_str}]})
-    
-    # 4. Audit log
-    audit_collection.insert_one({
-        "action": f"Deleted applicant {app_id_str} ({applicant.get('name') or applicant.get('firstName', '')})",
-        "performedBy": user.get("username") or user.get("email") or "Admin",
-        "institute": user.get("institute") or "Admission",
-        "timestamp": datetime.utcnow()
-    })
-    
-    return {"msg": "Applicant deleted successfully", "deletedId": str(app_oid)}
+        # 2. Delete corresponding student login account
+        if app_email:
+            user_collection.delete_many({"$or": [{"email": app_email}, {"username": app_id_str}]})
+        elif app_id_str:
+            user_collection.delete_many({"username": app_id_str})
+            
+        # 3. Clean up associated notifications
+        notification_collection.delete_many({"$or": [{"recipientId": str(app_oid)}, {"recipientId": app_id_str}]})
+        
+        # 4. Audit log
+        user_name = user.get("username") or user.get("email") or "Admin"
+        user_role = user.get("role") or "Admin"
+        audit_collection.insert_one({
+            "user": user_name,
+            "role": user_role,
+            "action": f"Deleted applicant {app_id_str} ({applicant.get('name') or applicant.get('firstName', '')})",
+            "performedBy": user_name,
+            "institute": user.get("institute") or "Admission",
+            "status": "Success",
+            "timestamp": datetime.utcnow()
+        })
+        
+        return {"msg": "Applicant deleted successfully", "deletedId": str(app_oid)}
+    except Exception as e:
+        user_name = user.get("username") or user.get("email") or "Admin"
+        user_role = user.get("role") or "Admin"
+        audit_collection.insert_one({
+            "user": user_name,
+            "role": user_role,
+            "action": f"Deleted applicant {app_id_str} ({applicant.get('name') or applicant.get('firstName', '')})",
+            "performedBy": user_name,
+            "institute": user.get("institute") or "Admission",
+            "status": "Failed",
+            "timestamp": datetime.utcnow()
+        })
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/utilities/fix-missing-sections")
 async def fix_missing_sections(user: dict = Depends(admin_only)):

@@ -218,9 +218,39 @@ app.include_router(enrollment_schedules.router)
 # ==========================================
 @app.get("/api/public/settings")
 async def get_public_settings():
-    settings = settings_collection.find_one({})
+    settings = settings_collection.find_one({"institute": "Admission"})
+    if not settings:
+        settings = settings_collection.find_one({})
     if not settings:
         return {"systemName": "Pre-Admission", "admissionStatus": "Open"}
+    
+    from utils.pre_admission.admission_status import evaluate_admission_status
+    settings, needs_save = evaluate_admission_status(settings)
+
+    if settings.get("applicationDeadline") and not settings.get("slotAcceptanceDeadline"):
+        try:
+            import calendar
+            from datetime import datetime
+            app_deadline_str = str(settings["applicationDeadline"])
+            base_dt = datetime.fromisoformat(app_deadline_str.replace("Z", "+00:00"))
+            year = base_dt.year + (base_dt.month + 2 - 1) // 12
+            month = (base_dt.month + 2 - 1) % 12 + 1
+            max_days = calendar.monthrange(year, month)[1]
+            day = min(base_dt.day, max_days)
+            slot_dt = base_dt.replace(year=year, month=month, day=day)
+            settings["slotAcceptanceDeadline"] = slot_dt.isoformat()
+            needs_save = True
+        except Exception:
+            pass
+
+    if needs_save:
+        settings_collection.update_one({"institute": "Admission"}, {"$set": {
+            "admissionStatus": settings.get("admissionStatus"),
+            "admissionOpen": settings.get("admissionOpen"),
+            "autoState": settings.get("autoState"),
+            "slotAcceptanceDeadline": settings.get("slotAcceptanceDeadline")
+        }})
+        
     settings["_id"] = str(settings["_id"])
     return settings
 

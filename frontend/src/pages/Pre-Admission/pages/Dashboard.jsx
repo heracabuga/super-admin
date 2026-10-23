@@ -34,18 +34,19 @@ export default function Dashboard({ navigateToTab, navigationState }) {
   const [publicSettings, setPublicSettings] = useState(null);
   const [selectedInstitute, setSelectedInstitute] = useState("All");
 
+  const [backendStats, setBackendStats] = useState(null);
+
   useEffect(() => {
     // Fetch User Profile
     const fetchUserProfile = async () => {
       try {
         const res = await api.get('/admin/profile');
-        setUserRole("Admin");
-        const inst = (res.data?.institute && res.data.institute !== "Admission") ? res.data.institute : "IITI";
-        setUserInstitute(inst);
+        setUserRole(res.data?.role || "Admin");
+        setUserInstitute(res.data?.institute || "Admission");
       } catch (error) {
         console.error("Failed to load user profile:", error);
         setUserRole("Admin");
-        setUserInstitute("IITI");
+        setUserInstitute("Admission");
       }
     };
 
@@ -60,6 +61,15 @@ export default function Dashboard({ navigateToTab, navigationState }) {
         setActiveYear(currentViewYear);
         if (archiveYear) setIsArchiveMode(true);
 
+        try {
+          const statsRes = await api.get('/admin/dashboard/stats', { params: { schoolYear: currentViewYear, archive: !!archiveYear } });
+          if (statsRes.data) {
+            setBackendStats(statsRes.data);
+          }
+        } catch (e) {
+          console.warn("Backend stats endpoint fallback:", e);
+        }
+
         // Include the 'archive' param to signal the backend to query the archive collection
         const res = await api.get('/admin/applicants', { params: { schoolYear: currentViewYear, archive: !!archiveYear } });
 
@@ -68,8 +78,13 @@ export default function Dashboard({ navigateToTab, navigationState }) {
 
           const formattedApplicants = activeApplicants.map(app => {
             const rawStatus = app.status;
-            const actualStatus = (rawStatus === 'Pending Interview' || rawStatus === 'Pending' || rawStatus?.toLowerCase() === 'pending')
-              ? 'For Interview' : (rawStatus || 'For Interview');
+            const actualStatus = (
+              rawStatus === 'For Interview' ||
+              rawStatus === 'Pending Interview' ||
+              rawStatus === 'Pending' ||
+              rawStatus?.toLowerCase() === 'pending' ||
+              app.admissionStatus === 'For Interview'
+            ) ? 'For Interview' : (rawStatus || 'For Interview');
 
             const fName = app.firstName || app.profile?.personal?.firstName || "";
             const lName = app.lastName || app.profile?.personal?.surname || "";
@@ -77,10 +92,27 @@ export default function Dashboard({ navigateToTab, navigationState }) {
             const appType = app.applicantType || app.profile?.appDetails?.applicantType || app.type || "N/A";
             const city = app.presentCity || app.profile?.personal?.presAddress?.city || app.location || "N/A";
             const applyDate = app.createdAt ? new Date(app.createdAt).toISOString().split('T')[0] : (app.date || "N/A");
-            const hasFinishedInterview = app.isInterviewed === true || app.interviewStatus === 'Passed' || app.interviewStatus === 'Failed' || (app.interviewScore !== undefined && app.interviewScore !== null && app.interviewScore > 0);
+            const hasFinishedInterview = (actualStatus !== 'For Interview') && (
+              app.isInterviewed === true ||
+              app.interviewStatus === 'Passed' ||
+              app.interviewStatus === 'Failed' ||
+              (app.interviewScore !== undefined && app.interviewScore !== null && app.interviewScore > 0)
+            );
 
             const firstChoice = app.profile?.appDetails?.firstChoice || app.firstChoice || "N/A";
             const secondChoice = app.profile?.appDetails?.secondChoice || app.secondChoice || "N/A";
+
+            let slotStatus = app.slotStatus || "Pending";
+            let admStatus = app.admissionStatus || app.status || "Pending";
+            if (!["Admitted", "Accepted", "Forfeit", "Forfeited"].includes(slotStatus)) {
+              if (["Admitted", "Confirmed", "Enrolled", "Advising Completed"].includes(admStatus) || app.status === "Enrolled") {
+                slotStatus = "Admitted";
+              } else if (["Forfeit", "Forfeited"].includes(admStatus)) {
+                slotStatus = "Forfeit";
+              } else {
+                slotStatus = "Pending";
+              }
+            }
 
             return {
               id: app.applicantId || (app._id ? `2026-${app._id.toString().slice(-4).toUpperCase()}` : "UNKNOWN"),
@@ -96,6 +128,8 @@ export default function Dashboard({ navigateToTab, navigationState }) {
               isExamined: app.isExamined === true,
               firstChoice,
               secondChoice,
+              slotStatus,
+              activeProgram: app.activeProgram || firstChoice,
               isRejectedFirstChoice: app.isRejectedFirstChoice === true,
               isRejectedSecondChoice: app.isRejectedSecondChoice === true,
               reconsiderationProgram: app.reconsiderationProgram || "",
@@ -117,6 +151,13 @@ export default function Dashboard({ navigateToTab, navigationState }) {
 
     const fetchApplicantsOnly = async () => {
       try {
+        try {
+          const statsRes = await api.get('/admin/dashboard/stats', { params: { schoolYear: activeYear } });
+          if (statsRes.data) {
+            setBackendStats(statsRes.data);
+          }
+        } catch (e) { }
+
         const res = await api.get('/admin/applicants', { params: { schoolYear: activeYear } });
 
         if (res.data && Array.isArray(res.data)) {
@@ -124,8 +165,13 @@ export default function Dashboard({ navigateToTab, navigationState }) {
 
           const formattedApplicants = activeApplicants.map(app => {
             const rawStatus = app.status;
-            const actualStatus = (rawStatus === 'Pending Interview' || rawStatus === 'Pending' || rawStatus?.toLowerCase() === 'pending')
-              ? 'For Interview' : (rawStatus || 'For Interview');
+            const actualStatus = (
+              rawStatus === 'For Interview' ||
+              rawStatus === 'Pending Interview' ||
+              rawStatus === 'Pending' ||
+              rawStatus?.toLowerCase() === 'pending' ||
+              app.admissionStatus === 'For Interview'
+            ) ? 'For Interview' : (rawStatus || 'For Interview');
 
             const fName = app.firstName || app.profile?.personal?.firstName || "";
             const lName = app.lastName || app.profile?.personal?.surname || "";
@@ -133,10 +179,27 @@ export default function Dashboard({ navigateToTab, navigationState }) {
             const appType = app.applicantType || app.profile?.appDetails?.applicantType || app.type || "N/A";
             const city = app.presentCity || app.profile?.personal?.presAddress?.city || app.location || "N/A";
             const applyDate = app.createdAt ? new Date(app.createdAt).toISOString().split('T')[0] : (app.date || "N/A");
-            const hasFinishedInterview = app.isInterviewed === true || app.interviewStatus === 'Passed' || app.interviewStatus === 'Failed' || (app.interviewScore !== undefined && app.interviewScore !== null && app.interviewScore > 0);
+            const hasFinishedInterview = (actualStatus !== 'For Interview') && (
+              app.isInterviewed === true ||
+              app.interviewStatus === 'Passed' ||
+              app.interviewStatus === 'Failed' ||
+              (app.interviewScore !== undefined && app.interviewScore !== null && app.interviewScore > 0)
+            );
 
             const firstChoice = app.profile?.appDetails?.firstChoice || app.firstChoice || "N/A";
             const secondChoice = app.profile?.appDetails?.secondChoice || app.secondChoice || "N/A";
+
+            let slotStatus = app.slotStatus || "Pending";
+            let admStatus = app.admissionStatus || app.status || "Pending";
+            if (!["Admitted", "Accepted", "Forfeit", "Forfeited"].includes(slotStatus)) {
+              if (["Admitted", "Confirmed", "Enrolled", "Advising Completed"].includes(admStatus) || app.status === "Enrolled") {
+                slotStatus = "Admitted";
+              } else if (["Forfeit", "Forfeited"].includes(admStatus)) {
+                slotStatus = "Forfeit";
+              } else {
+                slotStatus = "Pending";
+              }
+            }
 
             return {
               id: app.applicantId || (app._id ? `2026-${app._id.toString().slice(-4).toUpperCase()}` : "UNKNOWN"),
@@ -152,6 +215,8 @@ export default function Dashboard({ navigateToTab, navigationState }) {
               isExamined: app.isExamined === true,
               firstChoice,
               secondChoice,
+              slotStatus,
+              activeProgram: app.activeProgram || firstChoice,
               isRejectedFirstChoice: app.isRejectedFirstChoice === true,
               isRejectedSecondChoice: app.isRejectedSecondChoice === true,
               reconsiderationProgram: app.reconsiderationProgram || "",
@@ -175,11 +240,15 @@ export default function Dashboard({ navigateToTab, navigationState }) {
   }, [activeYear, isArchiveMode]);
 
   const filteredDashboardApplicants = useMemo(() => {
-    // Normal Admin view: strictly show applicants belonging to institute (IITI)
+    // SuperAdmin or Admission institute view: show all applicants across all institutes
+    if (userRole === "SuperAdmin" || !userInstitute || userInstitute === "Admission" || userInstitute === "All") {
+      return applicants;
+    }
+
+    // Normal Admin view: strictly show applicants belonging to institute
     const courses = publicSettings?.courses || [];
-    const targetInst = (userInstitute && userInstitute !== "Admission") ? userInstitute : "IITI";
     const instituteCourseNames = courses
-      .filter(c => c.institute === targetInst)
+      .filter(c => c.institute === userInstitute)
       .map(c => c.name);
 
     return applicants.filter(app => {
@@ -200,10 +269,15 @@ export default function Dashboard({ navigateToTab, navigationState }) {
       // Fallback matching for IITI / Information Technology
       return activeProgram.includes("Information Technology") || activeProgram.includes("BSIT");
     });
-  }, [applicants, userInstitute, publicSettings]);
+  }, [applicants, userRole, userInstitute, publicSettings]);
 
-  const totalApplicants = filteredDashboardApplicants.length;
-  const forInterviewCount = filteredDashboardApplicants.filter(a => a.status === "For Interview" && !a.isInterviewed).length;
+  const totalApplicants = backendStats?.totalApplicants ?? filteredDashboardApplicants.length;
+  
+  const recentApplicants = useMemo(() => {
+    return filteredDashboardApplicants.filter(a => a.status === "For Interview");
+  }, [filteredDashboardApplicants]);
+
+  const forInterviewCount = backendStats?.forInterviewCount ?? recentApplicants.length;
 
   const normalizeAdmissionRemark = (status) => {
     const normalized = (status || "Pending").toString().trim().toUpperCase();
@@ -214,20 +288,20 @@ export default function Dashboard({ navigateToTab, navigationState }) {
     return "Pending";
   };
 
-  const admittedApplicants = filteredDashboardApplicants.filter(a => {
-    let admStatus = a.admissionStatus || a.status || "Pending";
-    let slotStatus = a.slotStatus || "Pending";
-    if (!["Admitted", "Forfeit"].includes(slotStatus)) {
-      if (admStatus === "Admitted" || admStatus === "Confirmed") {
-        slotStatus = "Admitted";
-      } else if (admStatus === "Forfeit") {
-        slotStatus = "Forfeit";
-      } else {
-        slotStatus = "Pending";
-      }
+  const admittedApplicants = useMemo(() => {
+    if (backendStats?.admittedCount !== undefined && backendStats?.admittedCount !== null) {
+      return backendStats.admittedCount;
     }
-    return slotStatus === "Admitted";
-  }).length;
+    return filteredDashboardApplicants.filter(a => {
+      const slotStatus = a.slotStatus || "Pending";
+      const admStatus = a.admissionStatus || a.status || "Pending";
+      return (
+        ["Admitted", "Accepted"].includes(slotStatus) ||
+        a.status === "Enrolled" ||
+        ["Admitted", "Confirmed", "Advising Completed"].includes(admStatus)
+      );
+    }).length;
+  }, [backendStats, filteredDashboardApplicants]);
 
   useEffect(() => {
     if (loading) return;
@@ -397,7 +471,6 @@ export default function Dashboard({ navigateToTab, navigationState }) {
     };
   }, [filteredDashboardApplicants, loading, userInstitute, publicSettings]);
 
-  const recentApplicants = filteredDashboardApplicants.filter(a => a.status === "For Interview" && !a.isInterviewed);
 
   const getInstituteLimit = () => {
     if (!publicSettings || !publicSettings.institutes) return 30; // Default fallback

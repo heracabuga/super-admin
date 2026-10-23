@@ -52,8 +52,58 @@ const normalizeApplicantType = (val) => {
   const s = String(val).toUpperCase();
   if (s.includes("ALS") || s.includes("ALTERNATIVE")) return "ALS";
   if (s.includes("TRANS")) return "TRANSFEREE";
-  if (s.includes("SHS") || s.includes("SENIOR HIGH") || s.includes("FRESHMEN")) return "SHS GRADUATE";
-  return s;
+};
+
+const getDynamicPhysicalRequirements = (app) => {
+  const applicantType = app.profile?.appDetails?.applicantType || app.applicantType || "SHS Graduate";
+  const typeStr = String(applicantType).toUpperCase();
+  const docs = [];
+
+  if (typeStr.includes("TRANS")) {
+    docs.push("Original TOR / Certificate of Copy of Grades");
+    docs.push("Honorable Dismissal");
+    docs.push("Good Moral Certificate");
+    docs.push("PSA Birth Certificate");
+    docs.push("2pcs 2x2 picture");
+  } else if (typeStr.includes("ALS")) {
+    docs.push("Original Certificate of Rating");
+    docs.push("Original ALS Certification Test Result");
+    docs.push("PSA Birth Certificate");
+    docs.push("2pcs 2x2 picture");
+  } else {
+    // SHS Graduates (Freshmen)
+    docs.push("Original Form 138 (Grade 12 Report Card)");
+    docs.push("Photocopy Grade 11 Report Card (Certified True Copy)");
+    docs.push("Good Moral Certificate");
+    docs.push("Photocopy of SHS Diploma");
+    docs.push("PSA Birth Certificate");
+    docs.push("2pcs 2x2 picture");
+  }
+
+  // Priority / DEI Conditions
+  const check = (val) => {
+    if (!val) return false;
+    const s = String(val).trim().toLowerCase();
+    return s === "true" || s === "yes" || s === "1";
+  };
+
+  const other = app.profile?.otherInfo || {};
+  const personal = app.profile?.personalInfo || app.profile?.personal || {};
+  const appDetails = app.profile?.appDetails || {};
+
+  const isPwd = check(app.disability) || check(app.pwd) || check(other.isPwd) || check(personal.pwd) || check(personal.disability);
+  const isSolo = check(app.soloParent) || check(other.isSoloParent) || check(personal.soloParent) || check(appDetails.soloParent);
+  const is4Ps = check(app.fourPs) || check(other.is4Ps) || check(personal.fourPs) || check(appDetails.fourPs);
+  const isInd = check(app.indigenous) || check(other.isIndigenous) || check(personal.indigenous) || check(appDetails.indigenous);
+  const isOfw = check(app.ofw) || check(other.isOfw) || check(personal.ofw) || check(appDetails.ofw);
+
+  if (isPwd) docs.push("PWD ID/Certificate for disability");
+  if (isSolo) docs.push("Solo Parent ID");
+  if (is4Ps) docs.push("4Ps ID");
+  if (isInd) docs.push("NCIP Certificate for Indigenous");
+  if (isOfw) docs.push("OFW contract/ID");
+
+  return docs.map(d => `• ${d}`).join("\n");
 };
 
 const getCourseAbbreviation = (courseName, coursesList) => {
@@ -486,6 +536,8 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
   const [reconsiderationProgram, setReconsiderationProgram] = useState("");
   const [emailTargetIds, setEmailTargetIds] = useState([]);
   const [selectedDropdownTarget, setSelectedDropdownTarget] = useState("all");
+  const [slotAcceptanceDeadline, setSlotAcceptanceDeadline] = useState("");
+  const [hardcopyDeadlineInput, setHardcopyDeadlineInput] = useState("");
 
   // --- BCET IMPORT CONFIRMATION ---
   const [pendingBcetData, setPendingBcetData] = useState(null);
@@ -621,6 +673,10 @@ export default function PreAdmission({ navigateToTab, navigationState }) {
       if (settingsRes.data) {
         setActiveYear(settingsRes.data.schoolYear || "");
         setPortalSettings(settingsRes.data.portalSettings || null);
+        if (settingsRes.data.slotAcceptanceDeadline) {
+          setSlotAcceptanceDeadline(settingsRes.data.slotAcceptanceDeadline);
+          setHardcopyDeadlineInput(settingsRes.data.slotAcceptanceDeadline);
+        }
       }
 
       const currentViewYear = archiveYear || settingsRes.data.schoolYear;
@@ -1317,6 +1373,9 @@ Baliwag Polytechnic College`;
     setSelectedEmailTemplateType(typeStr);
     setEmailTargetIds(targetIds);
     setSelectedDropdownTarget("all");
+    if (typeStr === "Admission Qualification Notice" && slotAcceptanceDeadline) {
+      setHardcopyDeadlineInput(slotAcceptanceDeadline);
+    }
     await loadEmailTemplate(typeStr);
 
     if (targetIds.length === 1) {
@@ -1524,7 +1583,21 @@ Baliwag Polytechnic College`;
 
     const emailsToSend = targets.map(app => {
       const appType = app.profile?.appDetails?.applicantType || app.type || "";
-      const reqs = getEmailRequirements(app, selectedEmailTemplateType);
+      const reqs = (selectedEmailTemplateType === "Admission Qualification Notice")
+        ? getDynamicPhysicalRequirements(app)
+        : getEmailRequirements(app, selectedEmailTemplateType);
+
+      let formattedDeadline = "TBA";
+      const targetDeadline = hardcopyDeadlineInput || slotAcceptanceDeadline;
+      if (targetDeadline) {
+        try {
+          const d = new Date(targetDeadline);
+          if (!isNaN(d.getTime())) {
+            formattedDeadline = d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+          }
+        } catch (e) {}
+      }
+
       const toEmail = app.profile?.personal?.email || app.email || "";
       const upperName = (app.name || "").toUpperCase();
       const applicantNo = app.id || "N/A";
@@ -1551,6 +1624,11 @@ Baliwag Polytechnic College`;
         .replace(/\[COURSE\]/gi, displayCourse)
         .replace(/\[PROGRAM\]/gi, displayCourse)
         .replace(/\[REQUIREMENTS\]/g, reqs)
+        .replace(/\[DEADLINE\]/gi, formattedDeadline)
+        .replace(/\[SUBMISSION DEADLINE\]/gi, formattedDeadline)
+        .replace(/\[HARDCOPY SUBMISSION DEADLINE\]/gi, formattedDeadline)
+        .replace(/\[SLOT ACCEPTANCE DEADLINE\]/gi, formattedDeadline)
+        .replace(/\[HARDCOPY DEADLINE\]/gi, formattedDeadline)
         .replace(/\[Year & Semester\]/g, currentAY)
         .replace(/\[Interview Date\]/gi, interviewDate)
         .replace(/\[Interview Time\]/gi, interviewTime)
@@ -1590,6 +1668,7 @@ Baliwag Polytechnic College`;
         message: personalizedMsg,
         htmlMessage: htmlMessage,
         applicantId: app.rawId || app._id,
+        hardcopySubmissionDeadline: hardcopyDeadlineInput || slotAcceptanceDeadline || "",
         type: selectedEmailTemplateType || "Admission Qualification Notice"
       };
     }).filter(e => e.email);
@@ -1601,7 +1680,10 @@ Baliwag Polytechnic College`;
 
     try {
       setIsSendingMessage(true);
-      const res = await api.post('/admin/emails/send-bulk', { emails: emailsToSend });
+      const res = await api.post('/admin/emails/send-bulk', { 
+        emails: emailsToSend,
+        hardcopySubmissionDeadline: hardcopyDeadlineInput || slotAcceptanceDeadline || ""
+      });
 
       if (selectedEmailTemplateType === "Letter of Reconsideration") {
         for (const target of targets) {
@@ -3027,7 +3109,18 @@ Baliwag Polytechnic College`;
                       <td className="px-4 py-1 text-[12px] text-gray-800 ">{getCourseAbbreviation(a.reconsiderationProgram || (a.isRejectedFirstChoice ? a.profile?.appDetails?.secondChoice : a.profile?.appDetails?.firstChoice) || a.activeProgram || a.program, coursesList)}</td>
 
                       <td className="px-4 py-1 text-center text-[12px]  text-gray-600">
-                        {a.interviewScore > 0 ? `${a.interviewScore}/100` : <span className="font-black text-[12px] text-gray-500">—</span>}
+                        {a.interviewScore > 0 ? (
+                          <div className="flex items-center justify-center gap-1.5">
+                            <span>{`${a.interviewScore}/100`}</span>
+                            {a.isInterviewWaived && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-100 text-blue-800 border border-blue-200 tracking-tight">
+                                AUTO
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="font-black text-[12px] text-gray-500">—</span>
+                        )}
                       </td>
 
                       <td className="px-4 py-1 text-center text-[12px] text-gray-600">
@@ -3205,6 +3298,23 @@ Baliwag Polytechnic College`;
                 <input type="text" value={emailSubject} onChange={(e) => setEmailSubject(e.target.value)} className="w-full border border-gray-300 rounded px-3 py-2 text-[12px] outline-none focus:border-blue-500" />
               </div>
 
+              {selectedEmailTemplateType === "Admission Qualification Notice" && (
+                <div className="flex flex-col">
+                  <label className="text-xs font-bold text-gray-700 uppercase mb-1">
+                    Hardcopy Requirements Submission Deadline
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={hardcopyDeadlineInput ? hardcopyDeadlineInput.slice(0, 16) : ""}
+                    onChange={(e) => setHardcopyDeadlineInput(e.target.value)}
+                    className="w-full border border-gray-300 rounded px-3 py-2 text-[12px] outline-none focus:border-blue-500 bg-white"
+                  />
+                  <span className="text-[10px] text-gray-500 italic mt-0.5">
+                    Preloaded from Settings. Applicants must submit physical requirements and confirm slot before this date.
+                  </span>
+                </div>
+              )}
+
               {selectedEmailTemplateType === "Letter of Reconsideration" && emailTargetIds.length === 1 && (
                 <div className="flex flex-col">
                   <label className="text-xs font-bold text-gray-700 uppercase mb-1">Select Program</label>
@@ -3249,7 +3359,7 @@ Baliwag Polytechnic College`;
                 <label className="text-xs font-bold text-gray-700 uppercase mb-1">Message</label>
                 <textarea value={emailMessage} onChange={(e) => setEmailMessage(e.target.value)} rows={16} className="w-full border border-gray-300 rounded px-3 py-2 text-[12px] outline-none focus:border-blue-500 resize-none"></textarea>
                 <span className="text-[10px] text-gray-500 italic mt-1">
-                  Note: Placeholders [APPLICANT NAME], [APPLICANT NO], [PROGRAM], [REQUIREMENTS], [Interview Date], [Interview Time], [Interview Location], and [Accept Slot] will be dynamically replaced for each recipient before sending automatically.
+                  Note: Placeholders [APPLICANT NAME], [APPLICANT NO], [PROGRAM], [REQUIREMENTS], [HARDCOPY SUBMISSION DEADLINE], [Interview Date], [Interview Time], [Interview Location], and [Accept Slot] will be dynamically replaced for each recipient before sending automatically.
                 </span>
               </div>
             </div>

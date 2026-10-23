@@ -105,15 +105,24 @@ class BulkUpdateStatusPayload(BasePayload):
     status: str
 
 class EmailDataPayload(BasePayload):
-    email: str
-    subject: str
-    message: str
+    email: Optional[str] = None
+    recipientEmail: Optional[str] = None
+    subject: Optional[str] = None
+    message: Optional[str] = None
     applicantId: Optional[str] = None
     type: Optional[str] = None
     htmlMessage: Optional[str] = None
+    hardcopySubmissionDeadline: Optional[str] = None
+
+    @model_validator(mode='after')
+    def resolve_email(self):
+        if not self.email and self.recipientEmail:
+            self.email = self.recipientEmail
+        return self
 
 class SendBulkEmailsPayload(BasePayload):
     emails: List[EmailDataPayload]
+    hardcopySubmissionDeadline: Optional[str] = None
 
 class ReassignProgramPayload(BasePayload):
     newProgram: Optional[str] = None

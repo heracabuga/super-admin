@@ -53,6 +53,7 @@ export default function Settings({ navigateToTab, navigationState }) {
     schoolYear: "",
     applicationStart: "",
     applicationDeadline: "",
+    slotAcceptanceDeadline: "",
     allowedApplicantTypes: ["SHS Graduate", "Transferee", "ALS"],
     portalSettings: {
       portalName: "Baliwag Polytechnic College\nADMISSION",
@@ -269,11 +270,12 @@ export default function Settings({ navigateToTab, navigationState }) {
 
         let deadline = "";
         let start = "";
+        let slotDeadline = "";
+        const pad = n => String(n).padStart(2, '0');
 
         if (res.data.applicationStart) {
           const sd = new Date(res.data.applicationStart);
           if (!isNaN(sd.getTime())) {
-            const pad = n => String(n).padStart(2, '0');
             start = `${sd.getFullYear()}-${pad(sd.getMonth() + 1)}-${pad(sd.getDate())}T${pad(sd.getHours())}:${pad(sd.getMinutes())}`;
           }
         }
@@ -281,8 +283,28 @@ export default function Settings({ navigateToTab, navigationState }) {
         if (res.data.applicationDeadline) {
           const d = new Date(res.data.applicationDeadline);
           if (!isNaN(d.getTime())) {
-            const pad = n => String(n).padStart(2, '0');
             deadline = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+          }
+        }
+
+        if (res.data.slotAcceptanceDeadline) {
+          const sld = new Date(res.data.slotAcceptanceDeadline);
+          if (!isNaN(sld.getTime())) {
+            slotDeadline = `${sld.getFullYear()}-${pad(sld.getMonth() + 1)}-${pad(sld.getDate())}T${pad(sld.getHours())}:${pad(sld.getMinutes())}`;
+          }
+        }
+
+        // Auto-scan / pre-populate +2 months based on applicationDeadline if slotAcceptanceDeadline is not yet set
+        if (!slotDeadline && (deadline || res.data.applicationDeadline)) {
+          try {
+            const baseDeadline = new Date(deadline || res.data.applicationDeadline);
+            if (!isNaN(baseDeadline.getTime())) {
+              const twoMonthsLater = new Date(baseDeadline);
+              twoMonthsLater.setMonth(twoMonthsLater.getMonth() + 2);
+              slotDeadline = `${twoMonthsLater.getFullYear()}-${pad(twoMonthsLater.getMonth() + 1)}-${pad(twoMonthsLater.getDate())}T${pad(twoMonthsLater.getHours())}:${pad(twoMonthsLater.getMinutes())}`;
+            }
+          } catch (e) {
+            console.error("Error auto-calculating slotAcceptanceDeadline on load:", e);
           }
         }
 
@@ -309,11 +331,11 @@ export default function Settings({ navigateToTab, navigationState }) {
         if (archiveYear) {
           setIsArchiveMode(true);
           setSettings({
-            ...defaultSettings, ...res.data, portalSettings: mergedPortalSettings, schoolYear: archiveYear, admissionOpen: false, admissionStatus: "Closed", applicationStart: "", applicationDeadline: ""
+            ...defaultSettings, ...res.data, portalSettings: mergedPortalSettings, schoolYear: archiveYear, admissionOpen: false, admissionStatus: "Closed", applicationStart: "", applicationDeadline: "", slotAcceptanceDeadline: ""
           });
         } else {
           setSettings({
-            ...defaultSettings, ...res.data, portalSettings: mergedPortalSettings, schoolYear: res.data.schoolYear || "", admissionOpen: isOpen, admissionStatus: isOpen ? "Open" : "Closed", applicationStart: start || res.data.applicationStart || "", applicationDeadline: deadline || res.data.applicationDeadline || ""
+            ...defaultSettings, ...res.data, portalSettings: mergedPortalSettings, schoolYear: res.data.schoolYear || "", admissionOpen: isOpen, admissionStatus: isOpen ? "Open" : "Closed", applicationStart: start || res.data.applicationStart || "", applicationDeadline: deadline || res.data.applicationDeadline || "", slotAcceptanceDeadline: slotDeadline || res.data.slotAcceptanceDeadline || ""
           });
         }
 
@@ -466,7 +488,27 @@ export default function Settings({ navigateToTab, navigationState }) {
 
   const handleDateChange = (name, dateString) => {
     if (isArchiveMode || !canEditAdmission) return;
-    setSettings(prev => ({ ...prev, [name]: dateString || "" }));
+    setSettings(prev => {
+      const updated = { ...prev, [name]: dateString || "" };
+      if (name === 'applicationDeadline' && dateString) {
+        try {
+          const deadlineObj = new Date(dateString);
+          if (!isNaN(deadlineObj.getTime())) {
+            const twoMonthsLater = new Date(deadlineObj);
+            twoMonthsLater.setMonth(twoMonthsLater.getMonth() + 2);
+            const y = twoMonthsLater.getFullYear();
+            const m = String(twoMonthsLater.getMonth() + 1).padStart(2, '0');
+            const d = String(twoMonthsLater.getDate()).padStart(2, '0');
+            const hours = String(twoMonthsLater.getHours()).padStart(2, '0');
+            const mins = String(twoMonthsLater.getMinutes()).padStart(2, '0');
+            updated.slotAcceptanceDeadline = `${y}-${m}-${d}T${hours}:${mins}`;
+          }
+        } catch (e) {
+          console.error("Error auto-calculating slotAcceptanceDeadline:", e);
+        }
+      }
+      return updated;
+    });
   };
 
   const handleMatrixToggle = (courseIndex, applicantType) => {
@@ -499,9 +541,13 @@ export default function Settings({ navigateToTab, navigationState }) {
 
   const formatPayloadSettings = (baseSettings) => {
     let properDeadline = baseSettings.applicationDeadline;
-
     if (properDeadline && !properDeadline.includes('Z') && !properDeadline.includes('+')) {
       properDeadline = new Date(properDeadline).toISOString();
+    }
+
+    let properSlotDeadline = baseSettings.slotAcceptanceDeadline;
+    if (properSlotDeadline && !properSlotDeadline.includes('Z') && !properSlotDeadline.includes('+')) {
+      properSlotDeadline = new Date(properSlotDeadline).toISOString();
     }
 
     const now = new Date();
@@ -514,6 +560,7 @@ export default function Settings({ navigateToTab, navigationState }) {
     return {
       ...baseSettings,
       applicationDeadline: properDeadline,
+      slotAcceptanceDeadline: properSlotDeadline,
       notifications: notifSettings,
       security: securitySettings,
       admissionStatus: computedStatus,
@@ -1375,9 +1422,9 @@ export default function Settings({ navigateToTab, navigationState }) {
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                           <div className="space-y-2">
-                            <label className={`font-bold text-[16px] flex items-center gap-2 ${settings.admissionOpen || (settings.applicationDeadline && new Date() > new Date(settings.applicationDeadline)) || isArchiveMode || !canEditAdmission ? 'text-gray-400' : 'text-black'}`}>
+                            <label className={`font-bold text-[15px] flex items-center gap-2 ${settings.admissionOpen || (settings.applicationDeadline && new Date() > new Date(settings.applicationDeadline)) || isArchiveMode || !canEditAdmission ? 'text-gray-400' : 'text-black'}`}>
                               <Clock size={18} /> Admission Application Start
                             </label>
                             <CustomDateTimePicker
@@ -1390,13 +1437,26 @@ export default function Settings({ navigateToTab, navigationState }) {
                           </div>
 
                           <div className="space-y-2">
-                            <label className={`font-bold text-[16px] flex items-center gap-2 ${isArchiveMode || !canEditAdmission ? 'text-gray-400' : 'text-black'}`}>
+                            <label className={`font-bold text-[15px] flex items-center gap-2 ${isArchiveMode || !canEditAdmission ? 'text-gray-400' : 'text-black'}`}>
                               <Clock size={18} /> Admission Application Ends
                             </label>
                             <CustomDateTimePicker
                               value={settings.applicationDeadline}
                               onChange={(val) => handleDateChange('applicationDeadline', val)}
                               name="applicationDeadline"
+                              disabled={isArchiveMode || !canEditAdmission}
+                              placeholder="Select Date & Time"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className={`font-bold text-[15px] flex items-center gap-2 ${isArchiveMode || !canEditAdmission ? 'text-gray-400' : 'text-black'}`}>
+                              <Clock size={18} /> Slot Acceptance Deadline
+                            </label>
+                            <CustomDateTimePicker
+                              value={settings.slotAcceptanceDeadline}
+                              onChange={(val) => handleDateChange('slotAcceptanceDeadline', val)}
+                              name="slotAcceptanceDeadline"
                               disabled={isArchiveMode || !canEditAdmission}
                               placeholder="Select Date & Time"
                             />
@@ -2098,9 +2158,16 @@ export default function Settings({ navigateToTab, navigationState }) {
                             <td className="px-4 py-2.5 font-medium text-gray-800">{log.action}</td>
                             <td className="px-4 py-2.5 font-medium text-gray-800 text-center">{new Date(log.timestamp).toLocaleString()}</td>
                             <td className="px-4 py-2.5 text-center">
-                              <span className={`px-4 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest ${log.status === 'Success' ? 'bg-green-100 text-[#376e35]' : 'bg-red-100 text-red-700'}`}>
-                                {log.status}
-                              </span>
+                              {(() => {
+                                const rawStatus = (log.status || (log.action?.toLowerCase().includes('fail') ? 'Failed' : 'Success')).toString().trim();
+                                const isSuccess = rawStatus.toLowerCase() === 'success';
+                                const displayStatus = isSuccess ? 'SUCCESS' : 'FAILED';
+                                return (
+                                  <span className={`px-4 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest ${isSuccess ? 'bg-green-100 text-[#376e35]' : 'bg-red-100 text-red-700'}`}>
+                                    {displayStatus}
+                                  </span>
+                                );
+                              })()}
                             </td>
                           </tr>
                         ))
