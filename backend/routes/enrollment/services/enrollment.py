@@ -87,9 +87,16 @@ def find_candidate(store, requested):
     records = active_records(store)
     record = next((r for r in records if identifiers_match(r.get('applicantID'), requested)), None)
     if record:
-        student = store['students'].find_one({'studentNumber': {'$in': [digits(record['applicantID']), text(record['applicantID'])]}})
-        if student:
-            return {'applicant': student, 'advisingRecord': record, 'studentNumber': student['studentNumber'], 'isAdvisingRecord': True}
+        # If the advising record's applicantID contains "A-", only look in applicants, not students
+        if 'A-' in text(record.get('applicantID', '')):
+            applicant = find_applicant(store, requested)
+            if applicant:
+                student_number = applicant_identifier(applicant) or text(requested)
+                return {'applicant': applicant, 'advisingRecord': record, 'studentNumber': student_number, 'isAdvisingRecord': False}
+        else:
+            student = store['students'].find_one({'studentNumber': {'$in': [digits(record['applicantID']), text(record['applicantID'])]}})
+            if student:
+                return {'applicant': student, 'advisingRecord': record, 'studentNumber': student['studentNumber'], 'isAdvisingRecord': True}
     applicant = find_applicant(store, requested)
     if not applicant:
         return None
@@ -196,6 +203,7 @@ def plan_enrollment(store, found, groups, selected=None, direct=False):
     base['updatedAt'] = utcnow()
     if not found.get('isAdvisingRecord'):
         base['createdAt'] = utcnow()
+        base['password'] = 'password123'
     return {'ok': True, 'student': base, 'chosenSection': chosen, 'isIrregular': irregular, 'irregularMeta': meta}
 
 

@@ -63,7 +63,8 @@ def applicants(request: Request):
             matched.add(record['_id'])
             result.append(candidate(applicant, record))
     for student in store['students'].find({}):
-        record = next((r for r in records if digits(r.get('applicantID')) == digits(student.get('studentNumber')) and digits(student.get('studentNumber'))), None)
+        # Skip advising records with "A-" in applicantID — those only match applicants, not students
+        record = next((r for r in records if 'A-' not in text(r.get('applicantID', '')) and digits(r.get('applicantID')) == digits(student.get('studentNumber')) and digits(student.get('studentNumber'))), None)
         if record and record['_id'] not in matched:
             matched.add(record['_id'])
             result.append(candidate(student, record, True))

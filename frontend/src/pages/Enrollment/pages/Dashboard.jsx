@@ -46,6 +46,12 @@ function Dashboard() {
     const [studentNumberStudent, setStudentNumberStudent] = useState(null);
     const [studentNumberInput, setStudentNumberInput] = useState("");
     const [assigningStudentNumber, setAssigningStudentNumber] = useState(false);
+
+    // Real-time duplicate check: find any existing student whose studentNumber matches the input
+    const matchingExistingStudent = useMemo(() => {
+        if (!studentNumberInput) return null;
+        return students.find(s => String(s.studentNumber) === studentNumberInput) || null;
+    }, [studentNumberInput, students]);
     const isDisplayedStudent = (student) => student.status !== "Pending" && student.status !== "Advised";
     const hasApplicantId = (student) =>
         Object.prototype.hasOwnProperty.call(student, "applicantId") &&
@@ -1394,8 +1400,27 @@ function Dashboard() {
                         onChange={(event) => setStudentNumberInput(event.target.value.replace(/\D/g, ""))}
                         placeholder="Student number"
                         autoFocus
-                        className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                        className={`w-full rounded-xl border px-4 py-3 text-sm outline-none transition focus:ring-4 ${
+                            matchingExistingStudent
+                                ? "border-red-400 focus:border-red-500 focus:ring-red-500/10"
+                                : "border-slate-300 focus:border-emerald-500 focus:ring-emerald-500/10"
+                        }`}
                     />
+                    {matchingExistingStudent && (
+                        <div className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
+                            <i className="fa-solid fa-circle-exclamation mt-0.5 text-sm text-red-500" />
+                            <div className="flex flex-col gap-0.5">
+                                <p className="text-xs font-semibold text-red-700">Student number already exists</p>
+                                <p className="text-xs text-red-600">
+                                    <span className="font-mono font-bold">{matchingExistingStudent.studentNumber}</span>
+                                    {" — "}
+                                    {[matchingExistingStudent.firstName, matchingExistingStudent.lastName, matchingExistingStudent.suffix].filter(Boolean).join(" ")}
+                                    {" — "}
+                                    {matchingExistingStudent.year || "?"}-{matchingExistingStudent.section || "?"}
+                                </p>
+                            </div>
+                        </div>
+                    )}
                     <div className="flex justify-end gap-3">
                         <button
                             type="button"
@@ -1411,7 +1436,7 @@ function Dashboard() {
                         <button
                             type="button"
                             onClick={confirmStudentNumber}
-                            disabled={assigningStudentNumber || !studentNumberInput}
+                            disabled={assigningStudentNumber || !studentNumberInput || !!matchingExistingStudent}
                             className="rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             {assigningStudentNumber ? "Confirming..." : "Confirm"}
