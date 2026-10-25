@@ -270,6 +270,11 @@ if student_routes:
     app.include_router(student_routes.router, prefix="/api/student", tags=["Student"])
 
 app.include_router(admin_auth.router)  
+try:
+    from routes import evaluation_sso
+    app.include_router(evaluation_sso.router)
+except Exception as e:
+    print(f"[WARN] Evaluation SSO not loaded: {e}")
 app.include_router(rubric.router)
 app.include_router(admin.router)       
 app.include_router(applicant.router)
